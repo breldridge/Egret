@@ -32,7 +32,7 @@ class _PTDFManagerBase(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def get_branch_const(self, branch_name):
+    def get_ptdf_const(self, branch_name):
         pass
 
     @abc.abstractmethod
@@ -126,7 +126,7 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
         self._calculate_contingency_limits()
 
         self._base_point = base_point
-        self._calculate_ptdf_factorization()
+        self._calculate_factorization()
 
 
         self._set_lazy_limits(ptdf_options)
@@ -142,7 +142,7 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
         # dense array write buffer
         self._bus_sensi_buffer = np.empty((1,len(self.buses_keys_no_ref)), dtype=np.float64)
 
-    def _calculate_ptdf_factorization(self):
+    def _calculate_factorization(self):
         logger.info("Calculating PTDF Matrix Factorization")
         MLU, B_dA, ref_bus_mask, contingency_compensators, B_dA_I, I = \
                 tx_calc.calculate_ptdf_factorization(self._branches,
@@ -303,6 +303,7 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
         else:
             # calculate row
             branch_idx = self._branchname_to_index_map[branch_name]
+            #TODO: work out algebra of LOPF formulations
             PTDF_row = self.MLU.solve(self.B_dA[branch_idx].toarray(out=self._bus_sensi_buffer)[0], trans='T')
             self._ptdf_rows[branch_name] = PTDF_row
         return PTDF_row
@@ -322,6 +323,7 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
         return cont_PTDF_row
 
     def _get_interface_row(self, interface_name):
+        #TODO: assuming also no changes to interfact constraints? (i.e., just use real PTDF from base case)
         if interface_name in self._interface_rows:
             I_row = self._interface_rows[interface_name]
         else:
@@ -344,7 +346,7 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
         ptdf_row = self._get_ptdf_row(branch_name)
         return np.abs(ptdf_row).max()
 
-    def get_branch_const(self, branch_name):
+    def get_ptdf_const(self, branch_name):
         '''
         returns the constant coefficient for branch_name 's 
         power flow equation (given bus net withdrawls)
@@ -426,6 +428,7 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
         else:
             VA0 = VA
 
+        #TODO: need to think about the VA_delta since base case is linear AC (from MLU) and contingency is DC power flow
         VA_delta = self.MLU.solve( (comp.M *((-comp.c)*(comp.M.T@VA0))) )
         if VA_comp:
             VA_delta += comp.VA_compensator
@@ -627,6 +630,321 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
                  such that PFV + PFV_delta is the contingeny flow
         '''
         return self._calculate_PFV_delta(cn, PFV, VA, masked=False)
+
+
+class VirtualFDFpMatrix(VirtualPTDFMatrix):
+    # this PTDF object will be used for real power sensitivities in the P-LOPF, C-LOPF, and D-LOPF models
+    #TODO: test and verify calculations
+
+    def __init__(self, branches, buses, reference_bus, base_point,
+                       ptdf_options, branches_keys = None, buses_keys = None,
+                       interfaces = None, contingencies = None):
+        super().__init__(branches, buses, reference_bus, base_point,
+                       ptdf_options, branches_keys=branches_keys, buses_keys=buses_keys,
+                       interfaces=interfaces, contingencies=contingencies)
+        self._ptdf_const = dict()
+        self._pldf_row = dict()
+        self._pldf_const = dict()
+        self._lossoffset = None
+
+    def _calculate_factorization(self):
+        logger.info("Calculating FDF P-Matrix Factorization")
+        MLU, B_dA, G_dA, M0, ref_bus_mask, contingency_compensators, B_dA_I, I = \
+                tx_calc.calculate_fdf_p_factorization(self._branches,
+                                                     self._buses,self.branches_keys,
+                                                     self.buses_keys,
+                                                     self._base_point,
+                                                     contingencies=self.contingencies,
+                                                     mapping_bus_to_idx=self._busname_to_index_map,
+                                                     mapping_branch_to_idx=self._branchname_to_index_map,
+                                                     interfaces=self.interfaces,
+                                                     index_set_interface=self.interface_keys)
+
+        self.MLU = MLU
+        self.B_dA = B_dA
+        self.G_dA = G_dA
+        self.M0 = M0
+
+        self.ref_bus_mask = ref_bus_mask
+        self.contingency_compensators = contingency_compensators
+        self.B_dA_I = B_dA_I
+
+        # additional parameters for system losses
+        self._calculate_loss_distribution()
+        self._calculate_lossfactors()
+
+    def get_branch_pldf_iterator(self, branch_name):
+        '''
+        returns a (bus_name, coefficient) iterator for a given branch_name
+        '''
+        yield from zip(self.buses_keys_no_ref, self._get_pldf_row(branch_name))
+
+    def get_branch_pldf_abs_max(self, branch_name):
+        '''
+        returns the maximum of the absolute value for any coefficent
+        in branch_name's pldf row
+        '''
+        pldf_row = self._get_pldf_row(branch_name)
+        return np.abs(pldf_row).max()
+
+    def get_ptdf_const(self, branch_name):
+        '''
+        returns the constant coefficient for branch_name 's
+        reactive power flow equation (given bus net withdrawls)
+        '''
+        if branch_name in self._ptdf_const.keys():
+            const = self._ptdf_const[branch_name]
+        else:
+            ptdf_row = self._get_ptdf_row(branch_name)
+            branch_idx = self._branchname_to_index_map[branch_name]
+            const = ptdf_row@self.M0 + self._get_tseries_flow_const(branch_name)
+            self._ptdf_const[branch_name] = const
+
+        return const
+
+    def get_pldf_const(self, branch_name):
+        '''
+        returns the constant coefficient for branch_name 's
+        power loss equation (given bus net withdrawls)
+        '''
+        if branch_name in self._pldf_const.keys():
+            const = self._pldf_const[branch_name]
+        else:
+            pldf_row = self._get_pldf_row(branch_name)
+            branch_idx = self._branchname_to_index_map[branch_name]
+            const = pldf_row@self.M0 + self._get_tseries_loss_const(branch_name)
+            self._pldf_const[branch_name] = const
+
+        return const
+
+    def get_lossfactor(self):
+        LF = self._lossfactor
+        LF0 = self._lossoffset
+        return LF, LF0
+
+    def get_lossfactor_residuals(self):
+        self._update_lossfactor_residuals()
+        LF = self._lossfactor_resid
+        LF0 = self._lossoffset_resid
+        return LF, LF0
+
+    #TODO: do we also need a "get_interface_pldf_row()"? Might either calculate interface limits with or without loss adjustment
+    def _get_pldf_row(self, branch_name):
+        if branch_name in self._pldf_rows:
+            PLDF_row = self._pldf_rows[branch_name]
+        else:
+            # calculate row
+            branch_idx = self._branchname_to_index_map[branch_name]
+            PLDF_row = self.MLU.solve(self.G_dA[branch_idx].toarray(out=self._bus_sensi_buffer)[0], trans='T')
+            self._pldf_rows[branch_name] = PLDF_row
+            #TODO: find best spot to update loss factor residuals
+        return PLDF_row
+
+    def _update_lossfactor_residuals(self):
+        #TODO: also need to update the loss constraints for lazy/persistent solve
+        logger.info("Updating Loss Residuals")
+        rows = self._pldf_rows.keys()
+        factor_adj = sum([self._pldf_rows[r] for r in rows])
+        offset_adj = sum(self._get_pldf_const(r) for r in rows)
+        self._lossfactor_resid = self._lossfactor - factor_adj
+        self._lossoffset_resid = self._lossoffset - offset_adj
+
+    def _calculate_loss_distribution(self):
+        logger.info("Calculating Loss Distribution")
+        loss_dist = tx_calc.calculate_loss_distribution(self._branches, self._buses)
+        self._loss_distribution = loss_dist
+
+    def _calculate_lossfactors(self):
+        logger.info("Calculating Loss Factors")
+        bus_map = self._busname_to_index_map
+        #TODO: check that RHS is summing the correcet axis (not sure if needs to be row or column)
+        RHS = self.G_dA.sum(axis=0)
+        LF = self.MLU.solve(RHS.toarray(out=self._bus_sensi_buffer)[0], trans='T')
+        LF_dict = {b:LF[i] for b,i in bus_map.items()}
+        offset = LF@self.M0.solve(RHS.toarray(out=self._bus_sensi_buffer)[0], trans='T')
+        offset += sum([self._get_tseries_loss_const(bn) for bn in self._branches.keys()])
+        self._lossfactor = LF_dict
+        self._lossoffset = offset
+        self._lossfactor_resid = LF_dict
+        self._lossoffset_resid = offset
+
+    def _get_tseries_flow_const(self, branch_name):
+        #TODO: ideally would only send one branch and the from/to buses, but need to add stripped down function to tx_calc
+        buses = self._buses
+        branches = self._branches
+        F0 = tx_calc._calculate_F0_const_pflow(branches, buses, [branch_name], base_point=BasePointType.SOLUTION)
+        return F0
+
+    def _get_tseries_loss_const(self, branch_name):
+        #TODO: ideally would only send one branch and the from/to buses, but need to add stripped down function to tx_calc
+        buses = self._buses
+        branches = self._branches
+        L0 = tx_calc._calculate_L0_const_ploss(branches, buses, [branch_name], base_point=BasePointType.SOLUTION)
+        return L0
+
+
+class VirtualFDFpqMatrix(VirtualFDFpMatrix):
+    # this PTDF object can be used for real and reactive power sensitivities in C-LOPF and D-LOPF models
+    # Main functionality provided by VirualFDFpMatrix. FDFpq adds reactive power sensitivities and calculations
+    # TODO: Rewrite functions to not use masking of reference bus (unnecessary for Q matrices)
+    # TODO: Use/implement tx_calc.calulate_fdf_q_factorization() in calculate_factorization() function
+
+    def __init__(self, branches, buses, reference_bus, base_point,
+                 ptdf_options, branches_keys=None, buses_keys=None,
+                 interfaces=None, contingencies=None):
+        super().__init__(branches, buses, reference_bus, base_point,
+                         ptdf_options, branches_keys=branches_keys, buses_keys=buses_keys,
+                         interfaces=interfaces, contingencies=contingencies)
+        self._qtdf_row = dict()
+        self._qtdf_const = dict()
+        self._qldf_row = dict()
+        self._qldf_const = dict()
+
+    def _calculate_factorization(self):
+        super()._calculate_factorization()
+        logger.info("Calculating FDF Q-Matrix Factorization")
+        QMLU, QB_dA, QG_dA, QM0 = \
+            tx_calc.calculate_fdf_q_factorization(self._branches,
+                                                  self._buses, self.branches_keys,
+                                                  self.buses_keys,
+                                                  self._base_point,
+                                                  mapping_bus_to_idx=self._busname_to_index_map,
+                                                  mapping_branch_to_idx=self._branchname_to_index_map)
+
+        self.QMLU = QMLU
+        self.QB_dA = QB_dA  #TODO: consider renaming. These matrices no longer refer to susceptance and conductance
+        self.QG_dA = QG_dA  # - I think they are now "swapped" but the B/G names are kept for consistency w/ PTDF functions
+        self.QM0 = QM0
+
+        # additional parameters for system losses
+        self._calculate_qloss_distribution()
+        self._calculate_qlossfactors()
+
+    def get_branch_qtdf_iterator(self, branch_name):
+        '''
+        returns a (bus_name, coefficient) iterator for a given branch_name
+        '''
+        yield from zip(self.buses_keys_no_ref, self._get_qtdf_row(branch_name))
+
+    def get_branch_qldf_iterator(self, branch_name):
+        '''
+        returns a (bus_name, coefficient) iterator for a given branch_name
+        '''
+        yield from zip(self.buses_keys_no_ref, self._get_qldf_row(branch_name))
+
+    def get_branch_qldf_abs_max(self, branch_name):
+        '''
+        returns the maximum of the absolute value for any coefficent
+        in branch_name's qldf row
+        '''
+        qldf_row = self._get_qldf_row(branch_name)
+        return np.abs(qldf_row).max()
+
+    def get_qtdf_const(self, branch_name):
+        '''
+        returns the constant coefficient for branch_name 's
+        reactive power flow equation (given bus net withdrawls)
+        '''
+        if branch_name in self._qtdf_const.keys():
+            const = self._qtdf_const[branch_name]
+        else:
+            qtdf_row = self._get_qtdf_row(branch_name)
+            branch_idx = self._branchname_to_index_map[branch_name]
+            const = qtdf_row@self.QM0 + self._get_tseries_qflow_const(branch_name)
+            self._qtdf_const[branch_name] = const
+
+        return const
+
+    def get_qldf_const(self, branch_name):
+        '''
+        returns the constant coefficient for branch_name 's
+        reactive power loss equation (given bus net withdrawls)
+        '''
+        if branch_name in self._qldf_const.keys():
+            const = self._qldf_const[branch_name]
+        else:
+            qldf_row = self._get_qldf_row(branch_name)
+            branch_idx = self._branchname_to_index_map[branch_name]
+            const = qldf_row@self.QM0 + self._get_tseries_qloss_const(branch_name)
+            self._qldf_const[branch_name] = const
+
+        return const
+
+    def get_qlossfactor(self):
+        LF = self._qlossfactor
+        LF0 = self._qlossoffset
+        return LF, LF0
+
+    def get_qlossfactor_residuals(self):
+        self._update_qlossfactor_residuals()
+        LF = self._qlossfactor_resid
+        LF0 = self._qlossoffset_resid
+        return LF, LF0
+
+    def _get_qtdf_row(self, branch_name):
+        if branch_name in self._qtdf_rows:
+            QTDF_row = self._qtdf_rows[branch_name]
+        else:
+            # calculate row
+            branch_idx = self._branchname_to_index_map[branch_name]
+            QTDF_row = self.QMLU.solve(self.QB_dA[branch_idx].toarray(out=self._bus_sensi_buffer)[0], trans='T')
+            self._qtdf_rows[branch_name] = QTDF_row
+            #TODO: find best spot to update loss factor residuals
+        return QTDF_row
+
+    def _get_qldf_row(self, branch_name):
+        if branch_name in self._qldf_rows:
+            QLDF_row = self._qldf_rows[branch_name]
+        else:
+            # calculate row
+            branch_idx = self._branchname_to_index_map[branch_name]
+            QLDF_row = self.QMLU.solve(self.QG_dA[branch_idx].toarray(out=self._bus_sensi_buffer)[0], trans='T')
+            self._qldf_rows[branch_name] = QLDF_row
+            #TODO: find best spot to update loss factor residuals
+        return QLDF_row
+
+    def _update_qlossfactor_residuals(self):
+        #TODO: also need to update the loss constraints for lazy/persistent solve
+        logger.info("Updating Reactive Loss Residuals")
+        rows = self._qldf_rows.keys()
+        factor_adj = sum([self._qldf_rows[r] for r in rows])
+        offset_adj = sum(self._get_qldf_const(r) for r in rows)
+        self._qlossfactor_resid = self._qlossfactor - factor_adj
+        self._qlossoffset_resid = self._qlossoffset - offset_adj
+
+    def _calculate_qloss_distribution(self):
+        logger.info("Calculating Reactive Loss Distribution")
+        loss_dist = tx_calc.calculate_loss_distribution_q(self._branches, self._buses)
+        self._qloss_distribution = loss_dist
+
+    def _calculate_qlossfactors(self):
+        logger.info("Calculating Reactive Loss Factors")
+        bus_map = self._busname_to_index_map
+        #TODO: check that RHS is summing the correcet axis (not sure if needs to be row or column)
+        RHS = self.QG_dA.sum(axis=0)
+        LF = self.QMLU.solve(RHS.toarray(out=self._bus_sensi_buffer)[0], trans='T')
+        LF_dict = {b:LF[i] for b,i in bus_map.items()}
+        offset = LF@self.QM0.solve(RHS.toarray(out=self._bus_sensi_buffer)[0], trans='T')
+        offset += sum([self._get_tseries_qloss_const(bn) for bn in self._branches.keys()])
+        self._qlossfactor = LF_dict
+        self._qlossoffset = offset
+        self._qlossfactor_resid = LF_dict
+        self._qlossoffset_resid = offset
+
+    def _get_tseries_qflow_const(self, branch_name):
+        #TODO: ideally would only send one branch and the from/to buses, but need to add stripped down function to tx_calc
+        buses = self._buses
+        branches = self._branches
+        H0 = tx_calc._calculate_H0_const_qflow(branches, buses, [branch_name], base_point=BasePointType.SOLUTION)
+        return H0
+
+    def _get_tseries_qloss_const(self, branch_name):
+        #TODO: ideally would only send one branch and the from/to buses, but need to add stripped down function to tx_calc
+        buses = self._buses
+        branches = self._branches
+        K0 = tx_calc._calculate_K0_const_qloss(branches, buses, [branch_name], base_point=BasePointType.SOLUTION)
+        return K0
+
 
 
 class PTDFMatrix(_PTDFManagerBase):
@@ -849,7 +1167,7 @@ class PTDFMatrix(_PTDFManagerBase):
         PTDF_row = self.PTDFM[row_idx]
         return PTDF_row.dot(self.phi_adjust_array)
 
-    def get_branch_const(self, branch_name):
+    def get_ptdf_const(self, branch_name):
         row_idx = self._branchname_to_index_map[branch_name]
         ## get the row slice
         PTDF_row = self.PTDFM[row_idx]
@@ -887,6 +1205,8 @@ class PTDFMatrix(_PTDFManagerBase):
         return PFV, PFV_I
 
 class PTDFLossesMatrix(PTDFMatrix):
+    #TODO: change LDF to PLDF ("loss distribution factor" should be the loss coefficient used in the transmission limits
+    # - i.e., LDF is not supposed to be the marginal loss coefficient
 
     def _calculate(self):
         logger.info("Calculating PTDF Matrix")

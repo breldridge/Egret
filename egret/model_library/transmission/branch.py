@@ -40,6 +40,17 @@ def declare_var_dva(model, index_set, **kwargs):
     """
     decl.declare_var('dva', model=model, index_set=index_set, **kwargs)
 
+def declare_var_ploss(model, **kwargs):
+    """
+    Create variable for system-wide real power loss
+    """
+    decl.declare_var('ploss', model=model, index_set=None, **kwargs)
+
+def declare_var_qloss(model, **kwargs):
+    """
+    Create variable for system-wide reactive power loss
+    """
+    decl.declare_var('qloss', model=model, index_set=None, **kwargs)
 
 def declare_var_pfl(model, index_set, **kwargs):
     """
@@ -617,13 +628,14 @@ def get_power_flow_expr_ptdf_approx(model, branch_name, PTDF, rel_ptdf_tol=None,
     """
     Create a pyomo power flow expression from PTDF matrix
     """
+    #TODO: should we add "QTDFs" to the PTDF object or create a new QTDF object?
 
     if rel_ptdf_tol is None:
         rel_ptdf_tol = 0.
     if abs_ptdf_tol is None:
         abs_ptdf_tol = 0.
 
-    const = PTDF.get_branch_const(branch_name)
+    const = PTDF.get_branch_ptdf_const(branch_name)
 
     max_coef = PTDF.get_branch_ptdf_abs_max(branch_name)
 
@@ -669,6 +681,8 @@ def declare_eq_branch_power_ptdf_approx(model, index_set, PTDF, rel_ptdf_tol=Non
     for branch_name in con_set:
         expr = \
             get_power_flow_expr_ptdf_approx(m, branch_name, PTDF, rel_ptdf_tol=rel_ptdf_tol, abs_ptdf_tol=abs_ptdf_tol)
+
+        #TODO: check "include_losses" in rhs_options
 
         if pf_is_var:
             m.eq_pf_branch[branch_name] = \
@@ -735,6 +749,33 @@ def declare_eq_branch_loss_ptdf_approx(model, index_set, PTDF, rel_ptdf_tol=None
                 m.pfl[branch_name] == expr
         else:
             m.pfl[branch_name] = expr
+
+
+def declare_eq_branch_qfl_qtdf_approx(model, index_set, QTDF, rel_ptdf_tol=None, abs_ptdf_tol=None):
+    """
+    Create the equality constraints or expressions for losses (from QTDF
+    approximation) in the branch
+    """
+    m = model
+
+    con_set = decl.declare_set("_con_eq_branch_ploss_qtdf_approx_set", model, index_set)
+    qfl_is_var = isinstance(m.qfl, pe.Var)
+    if qfl_is_var:
+        m.eq_qfl_branch = pe.Constraint(con_set)
+    else:
+        if not isinstance(m.qfl, pe.Expression):
+            raise Exception("Unrecognized type for m.qfl", m.qfl.pprint())
+
+    for branch_name in con_set:
+        # TODO: check if ptdf_tol needs to be qtdf_tol or qldf_tol
+        expr = \
+            get_branch_qloss_expr_qtdf_approx(m, branch_name, QTDF, rel_ptdf_tol=rel_ptdf_tol, abs_ptdf_tol=abs_ptdf_tol)
+
+        if qfl_is_var:
+            m.eq_qfl_branch[branch_name] = \
+                m.qfl[branch_name] == expr
+        else:
+            m.qfl[branch_name] = expr
 
 
 def get_contingency_power_flow_expr_ptdf_approx(model, contingency_name, branch_name, PTDF,

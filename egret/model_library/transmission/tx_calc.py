@@ -292,7 +292,44 @@ def _get_susceptance(branch, approximation_type):
         raise RuntimeError("Could not find appropriate susceptance value")
     return b
 
-def _calculate_J11(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_idx,base_point=BasePointType.FLATSTART,approximation_type=ApproximationType.PTDF):
+
+def _calculate_Bd(branches,index_set_branch,base_point=BasePointType.FLATSTART,approximation_type=ApproximationType.PTDF):
+    """
+    Compute the power flow Jacobian for partial derivative of real power flow to voltage angle
+    """
+    _len_branch = len(index_set_branch)
+
+    data = []
+    row = []
+    col = []
+
+    for idx_row, branch_name in enumerate(index_set_branch):
+        branch = branches[branch_name]
+        from_bus = branch['from_bus']
+        to_bus = branch['to_bus']
+
+        b = _get_susceptance(branch, approximation_type)
+
+        if base_point == BasePointType.FLATSTART:
+            val = b
+
+        elif base_point == BasePointType.SOLUTION: # TODO: check that we are loading the correct values (or results)
+            vn = buses[from_bus]['vm']
+            vm = buses[to_bus]['vm']
+            tn = buses[from_bus]['va']
+            tm = buses[to_bus]['va']
+
+            val = b * vn * vm * cos(tn - tm)
+
+        data.append(val)
+        row.append(idx_row)
+        col.append(idx_row)
+
+    Bd = sp.coo_matrix( (data, (row,col)), shape=(_len_branch, _len_branch))
+    return Bd.tocsc()
+
+
+def _calculate_F_matrix_pflow(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_idx,base_point=BasePointType.FLATSTART,approximation_type=ApproximationType.PTDF):
     """
     Compute the power flow Jacobian for partial derivative of real power flow to voltage angle
     """
@@ -331,46 +368,11 @@ def _calculate_J11(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_
         col.append(idx_col)
         data.append(-val)
 
-    J11 = sp.coo_matrix( (data, (row,col)), shape=(_len_branch, _len_bus))
-    return J11.tocsc()
-
-def _calculate_Bd(branches,index_set_branch,base_point=BasePointType.FLATSTART,approximation_type=ApproximationType.PTDF):
-    """
-    Compute the power flow Jacobian for partial derivative of real power flow to voltage angle
-    """
-    _len_branch = len(index_set_branch)
-
-    data = []
-    row = []
-    col = []
-
-    for idx_row, branch_name in enumerate(index_set_branch):
-        branch = branches[branch_name]
-        from_bus = branch['from_bus']
-        to_bus = branch['to_bus']
-
-        b = _get_susceptance(branch, approximation_type)
-
-        if base_point == BasePointType.FLATSTART:
-            val = b
-
-        elif base_point == BasePointType.SOLUTION: # TODO: check that we are loading the correct values (or results)
-            vn = buses[from_bus]['vm']
-            vm = buses[to_bus]['vm']
-            tn = buses[from_bus]['va']
-            tm = buses[to_bus]['va']
-
-            val = b * vn * vm * cos(tn - tm)
-
-        data.append(val)
-        row.append(idx_row)
-        col.append(idx_row)
-
-    Bd = sp.coo_matrix( (data, (row,col)), shape=(_len_branch, _len_branch))
-    return Bd.tocsc()
+    F = sp.coo_matrix( (data, (row,col)), shape=(_len_branch, _len_bus))
+    return F.tocsc()
 
 
-def _calculate_L11(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_idx,base_point=BasePointType.FLATSTART):
+def _calculate_L_matrix_ploss(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_idx,base_point=BasePointType.FLATSTART):
     """
     Compute the power flow Jacobian for partial derivative of real power losses to voltage angle
     """
@@ -414,8 +416,122 @@ def _calculate_L11(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_
         col.append(idx_col)
         data.append(-val)
 
-    L11 = sp.coo_matrix((data,(row,col)),shape=(_len_branch,_len_bus))
-    return L11.tocsr()
+    L = sp.coo_matrix((data,(row,col)),shape=(_len_branch,_len_bus))
+    return L.tocsr()
+
+
+def _calculate_H_matrix_qflow(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_idx,base_point=BasePointType.SOLUTION):
+    """
+    Compute the power flow Jacobian for partial derivative of reactive power flow to voltage magnitude
+    """
+    _len_bus = len(index_set_bus)
+    _len_branch = len(index_set_branch)
+
+    data = []
+    row = []
+    col = []
+
+    for idx_row, branch_name in enumerate(index_set_branch):
+        branch = branches[branch_name]
+        from_bus = branch['from_bus']
+        to_bus = branch['to_bus']
+
+        tau = 1.0
+        shift = 0
+        if branch['branch_type'] == 'transformer':
+            tau = branch['transformer_tap_ratio']
+            shift = -math.radians(branch['transformer_phase_shift'])
+        g = calculate_conductance(branch)
+        b = calculate_susceptance(branch)
+        bc = branch['charging_susceptance']
+
+        if base_point == BasePointType.FLATSTART:
+            vn = 1
+            vm = 1.
+            tn = 0.
+            tm = 0.
+        elif base_point == BasePointType.SOLUTION:
+            vn = buses[from_bus]['vm']
+            vm = buses[to_bus]['vm']
+            tn = buses[from_bus]['va']
+            tm = buses[to_bus]['va']
+
+        val = -(b + bc/2) * vn / (tau**2) - g * vm * sin(tn - tm + shift)/tau
+
+        # else somebody might have to check
+        if val != 0.0:
+            idx_col = mapping_bus_to_idx[from_bus]
+            row.append(idx_row)
+            col.append(idx_col)
+            data.append(val)
+
+        val = (b + bc/2) * vm - g * vn * sin(tn - tm + shift)/tau
+
+        # else somebody might have to check
+        if val != 0.0:
+            idx_col = mapping_bus_to_idx[to_bus]
+            row.append(idx_row)
+            col.append(idx_col)
+            data.append(val)
+
+    H = sp.sparse.coo_matrix( (data, (row,col)), shape=(_len_branch, _len_bus))
+    return H.tocsr()
+
+
+def _calculate_K_matrix_qloss(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_idx,base_point=BasePointType.FLATSTART):
+    """
+    Compute the power flow Jacobian for partial derivative of reactive power losses to voltage magnitude
+    """
+    _len_bus = len(index_set_bus)
+    _len_branch = len(index_set_branch)
+
+    row = []
+    col = []
+    data = []
+
+    for idx_row, branch_name in enumerate(index_set_branch):
+        branch = branches[branch_name]
+        from_bus = branch['from_bus']
+        to_bus = branch['to_bus']
+
+        tau = 1.0
+        shift = 0
+        if branch['branch_type'] == 'transformer':
+            tau = branch['transformer_tap_ratio']
+            shift = -math.radians(branch['transformer_phase_shift'])
+        b = calculate_susceptance(branch)
+        bc = branch['charging_susceptance']
+
+        if base_point == BasePointType.FLATSTART:
+            vn = 1.
+            vm = 1.
+            tn = 0.
+            tm = 0.
+        elif base_point == BasePointType.SOLUTION:
+            vn = buses[from_bus]['vm']
+            vm = buses[to_bus]['vm']
+            tn = buses[from_bus]['va']
+            tm = buses[to_bus]['va']
+
+        val = -2 * (b + bc/2) * vn / (tau**2) + 2 * b * vm * cos(tn - tm + shift)/tau
+
+        if val != 0.0:
+            idx_col = mapping_bus_to_idx[from_bus]
+            row.append(idx_row)
+            col.append(idx_col)
+            data.append(val)
+
+        val = -2 * (b + bc/2) * vm + 2 * b * vn * cos(tn - tm + shift)/tau
+
+        if val != 0.0:
+            idx_col = mapping_bus_to_idx[to_bus]
+            row.append(idx_row)
+            col.append(idx_col)
+            data.append(val)
+
+    K = sp.sparse.coo_matrix((data,(row,col)),shape=(_len_branch,_len_bus))
+    return K.tocsr()
+
 
 def calculate_phase_shift_flow_adjuster(branches, index_set_branch):
     _len_branch = len(index_set_branch)
@@ -561,16 +677,16 @@ def calculate_phi_loss_constant(branches,index_set_branch,index_set_bus,approxim
 
     return phi_loss_from.tocsr(), phi_loss_to.tocsr()
 
-def _calculate_pf_constant(branches,buses,index_set_branch,base_point=BasePointType.FLATSTART):
+
+def _calculate_F0_const_pflow(branches,buses,index_set_branch,base_point=BasePointType.FLATSTART):
     """
     Compute the power flow constant for the taylor series expansion of real power flow as
-    a convex combination of the from/to directions, i.e.,
-    pf = 0.5*g*((tau*vn)^2 - vm^2) - tau*vn*vm*b*sin(tn-tm-shift)
+    a convex combination of the from/to directions.
     """
 
     _len_branch = len(index_set_branch)
     ## this will be fully dense
-    pf_constant = np.zeros(_len_branch)
+    F0_const = np.zeros(_len_branch)
 
     for idx_row, branch_name in enumerate(index_set_branch):
         branch = branches[branch_name]
@@ -596,23 +712,22 @@ def _calculate_pf_constant(branches,buses,index_set_branch,base_point=BasePointT
             tn = buses[from_bus]['va']
             tm = buses[to_bus]['va']
 
-        pf_constant[idx_row] = 0.5 * g * ((vn/tau) ** 2 - vm ** 2) \
+        F0_const[idx_row] = 0.5 * g * ((vn/tau) ** 2 - vm ** 2) \
                                - b * vn * vm * (sin(tn - tm + shift) - cos(tn - tm + shift)*(tn - tm))
 
-    return pf_constant
+    return F0_const
 
 
-def _calculate_pfl_constant(branches,buses,index_set_branch,base_point=BasePointType.FLATSTART):
+def _calculate_L0_const_ploss(branches,buses,index_set_branch,base_point=BasePointType.FLATSTART):
     """
     Compute the power losses constant for the taylor series expansion of real power losses as
-    a convex combination of the from/to directions, i.e.,
-    pfl = g*((tau*vn)^2 + vm^2) - 2*tau*vn*vm*g*cos(tn-tm-shift)
+    a convex combination of the from/to directions.
     """
 
     _len_branch = len(index_set_branch)
 
     ## this will be fully dense
-    pfl_constant = np.zeros(_len_branch)
+    L0_const = np.zeros(_len_branch)
 
     for idx_row, branch_name in enumerate(index_set_branch):
         branch = branches[branch_name]
@@ -639,10 +754,93 @@ def _calculate_pfl_constant(branches,buses,index_set_branch,base_point=BasePoint
             tn = buses[from_bus]['va']
             tm = buses[to_bus]['va']
 
-        pfl_constant[idx_row] = g2 * (vn ** 2) + _g * (vm ** 2) \
+        L0_const[idx_row] = g2 * (vn ** 2) + _g * (vm ** 2) \
                               - 2 * g * vn * vm * (sin(tn - tm + shift) * (tn - tm) + cos(tn - tm + shift))
 
-    return pfl_constant
+    return L0_const
+
+
+def _calculate_H0_const_qflow(branches,buses,index_set_branch,base_point=BasePointType.FLATSTART):
+    """
+    Compute the power flow constant for the taylor series expansion of reactive power flow as
+    a convex combination of the from/to directions.
+    """
+
+    _len_branch = len(index_set_branch)
+    ## this will be fully dense
+    H0_const = np.zeros(_len_branch)
+
+    for idx_row, branch_name in enumerate(index_set_branch):
+        branch = branches[branch_name]
+        from_bus = branch['from_bus']
+        to_bus = branch['to_bus']
+
+        tau = 1.0
+        shift = 0.0
+        if branch['branch_type'] == 'transformer':
+            tau = branch['transformer_tap_ratio']
+            shift = -math.radians(branch['transformer_phase_shift'])
+        g = calculate_conductance(branch)
+        b = calculate_susceptance(branch)
+        bc = branch['charging_susceptance']
+
+        if base_point == BasePointType.FLATSTART:
+            vn = 1.
+            vm = 1.
+            tn = 0.
+            tm = 0.
+        elif base_point == BasePointType.SOLUTION:
+            vn = buses[from_bus]['vm']
+            vm = buses[to_bus]['vm']
+            tn = buses[from_bus]['va']
+            tm = buses[to_bus]['va']
+
+        H0_const[idx_row] = 0.5 * (b+bc/2) * (vn**2/tau**2 - vm**2) \
+                               + g * vn * vm * sin(tn - tm + shift)/tau
+
+    return H0_const
+
+
+def _calculate_K0_const_qloss(branches,buses,index_set_branch,base_point=BasePointType.FLATSTART):
+    """
+    Compute the power flow constant for the taylor series expansion of reactive power losses as
+    a convex combination of the from/to directions.
+    """
+
+    _len_branch = len(index_set_branch)
+
+    ## this will be fully dense
+    K0_const = np.zeros(_len_branch)
+
+    for idx_row, branch_name in enumerate(index_set_branch):
+        branch = branches[branch_name]
+        from_bus = branch['from_bus']
+        to_bus = branch['to_bus']
+
+        tau = 1.0
+        shift = 0.0
+        if branch['branch_type'] == 'transformer':
+            tau = branch['transformer_tap_ratio']
+            shift = -math.radians(branch['transformer_phase_shift'])
+        b = calculate_susceptance(branch)
+        bc = branch['charging_susceptance']
+
+        if base_point == BasePointType.FLATSTART:
+            vn = 1.
+            vm = 1.
+            tn = 0.
+            tm = 0.
+        elif base_point == BasePointType.SOLUTION:
+            vn = buses[from_bus]['vm']
+            vm = buses[to_bus]['vm']
+            tn = buses[from_bus]['va']
+            tm = buses[to_bus]['va']
+
+        K0_const[idx_row] = (b+bc/2) * ((vn/tau)**2 + vm**2) \
+                               - 2 * b * vn * vm * cos(tn - tm + shift) / tau
+
+    return K0_const
+
 
 def calculate_ptdf_factorization(branches,buses,index_set_branch,index_set_bus,reference_bus,
                                  base_point=BasePointType.FLATSTART,
@@ -681,7 +879,7 @@ def calculate_ptdf_factorization(branches,buses,index_set_branch,index_set_bus,r
 
     At_masked = At[ref_bus_mask]
 
-    Bd = _calculate_Bd(branches, index_set_branch)
+    Bd = _calculate_Bd(branches, index_set_branch, base_point=base_point)
     B_dA = Bd@(At_masked.T)
 
     # M is now (A^T B_d A) with
@@ -693,6 +891,7 @@ def calculate_ptdf_factorization(branches,buses,index_set_branch,index_set_bus,r
     MLU_MP = scipy.sparse.linalg.splu(M)
 
     if contingencies:
+        #TODO: (FDF factorization) need to use MLU_MP from basic DC power flow, not from linearized AC
         contingency_compensators = \
             precompute_contingency_matricies( graph, MLU_MP, At_masked.T, Bd,
                                               mapping_bus_to_idx, mapping_branch_to_idx, 
@@ -710,6 +909,170 @@ def calculate_ptdf_factorization(branches,buses,index_set_branch,index_set_bus,r
         B_dA_I = I@B_dA
 
         return MLU_MP, B_dA, ref_bus_mask, contingency_compensators, B_dA_I, I
+
+def calculate_fdf_p_factorization(branches,buses,index_set_branch,index_set_bus,reference_bus,
+                                 base_point=BasePointType.SOLUTION,
+                                 contingencies=None,
+                                 mapping_bus_to_idx=None,
+                                 mapping_branch_to_idx=None,
+                                 interfaces=None,
+                                 index_set_interface=None):
+
+    if interfaces is None:
+        assert index_set_interface is None
+    if index_set_interface is None:
+        assert interfaces is None
+
+    _len_bus = len(index_set_bus)
+
+    if mapping_bus_to_idx is None:
+        mapping_bus_to_idx = {bus_n: i for i, bus_n in enumerate(index_set_bus)}
+
+    _len_branch = len(index_set_branch)
+
+    _ref_bus_idx = mapping_bus_to_idx[reference_bus]
+
+    ## check if the network is connected
+    graph = construct_connection_graph(branches, mapping_bus_to_idx)
+    connected = check_network_connection(graph, index_set_bus)
+
+    if not connected:
+        raise RuntimeError("Network is not connected, cannot use PTDF formulation")
+
+    #(A^T)
+    At = calculate_adjacency_matrix_transpose(branches,index_set_branch,index_set_bus,mapping_bus_to_idx)
+    AbAt = calculate_absolute_adjacency_matrix(At)
+
+    ref_bus_mask = np.ones(_len_bus, dtype=bool)
+    ref_bus_mask[_ref_bus_idx] = False
+
+    At_masked = At[ref_bus_mask]
+    AbAt_masked = AbAt[ref_bus_mask]
+
+    Fm = _calculate_F_matrix_pflow(branches, buses, index_set_branch, index_set_bus, mapping_bus_to_idx,
+                                   base_point=base_point, approximation_type=ApproximationType.PTDF_LOSSES)
+    F0 = _calculate_F0_const_pflow(branches, buses, index_set_branch, base_point=base_point)
+    Lm = _calculate_L_matrix_ploss(branches, buses, index_set_branch, index_set_bus, mapping_bus_to_idx,
+                                   base_point=base_point)
+    L0 = _calculate_L0_const_ploss(branches, buses, index_set_branch, base_point=base_point)
+
+    # M is now (A^T B_d A + 1/2 * AA^T G_d A) with
+    # row and column of reference
+    # bus removed
+    M1 = At_masked@Fm
+    M2 = AbAt_masked@Lm
+    M = M1 + 0.5 * M2
+
+    M0 = At_masked@F0 + 0.5 * AbAt_masked@L0
+
+    ## LU factorization
+    MLU_MP = scipy.sparse.linalg.splu(M)
+
+    # Basic DC power flow factorization for contingency compensators
+    Bd = _calculate_Bd(branches, index_set_branch)
+    M_cc = At_masked@Bd@(At_masked.T)
+    MLU_cc = scipy.sparse.linalg.splu(M_cc)
+
+    if contingencies:
+        #TODO: Check that MLU_CC is correct DC power flow matrix for contingency compensators
+        contingency_compensators = \
+            precompute_contingency_matricies( graph, MLU_cc, At_masked.T, Bd,
+                                              mapping_bus_to_idx, mapping_branch_to_idx,
+                                              ref_bus_mask,
+                                              branches, contingencies )
+    else:
+        contingency_compensators = {}
+
+    if interfaces is None:
+        return MLU_MP, Fm, Lm, M0, ref_bus_mask, contingency_compensators
+    else:
+        if mapping_bus_to_idx is None:
+            mapping_branch_to_idx = {branch_n: i for i, branch_n in enumerate(index_set_branch)}
+        I = _calculate_interface_matrix(interfaces, index_set_interface, mapping_branch_to_idx)
+        #TODO: should interfaces use FDF or DC power flow sensitivities? (related questions on losses and Q flow)
+        B_dA_I = I@B_dA
+
+        return MLU_MP, Fm, Lm, M0, ref_bus_mask, contingency_compensators, B_dA_I, I
+
+
+def calculate_fdf_q_factorization(branches,buses,index_set_branch,index_set_bus,
+                                 base_point=BasePointType.SOLUTION,
+                                 contingencies=None,
+                                 mapping_bus_to_idx=None,
+                                 mapping_branch_to_idx=None,
+                                 interfaces=None,
+                                 index_set_interface=None):
+
+    if interfaces is None:
+        assert index_set_interface is None
+    if index_set_interface is None:
+        assert interfaces is None
+
+    _len_bus = len(index_set_bus)
+
+    if mapping_bus_to_idx is None:
+        mapping_bus_to_idx = {bus_n: i for i, bus_n in enumerate(index_set_bus)}
+
+    _len_branch = len(index_set_branch)
+
+    ## check if the network is connected
+    graph = construct_connection_graph(branches, mapping_bus_to_idx)
+    connected = check_network_connection(graph, index_set_bus)
+
+    if not connected:
+        raise RuntimeError("Network is not connected, cannot use PTDF formulation")
+
+    #(A^T)
+    At = calculate_adjacency_matrix_transpose(branches,index_set_branch,index_set_bus,mapping_bus_to_idx)
+    AbAt = calculate_absolute_adjacency_matrix(At)
+
+    Hm = _calculate_H_matrix_qflow(branches, buses, index_set_branch, index_set_bus, mapping_bus_to_idx, base_point=base_point)
+    H0 = _calculate_H0_const_qflow(branches, buses, index_set_branch, base_point=base_point)
+    Km = _calculate_K_matrix_qloss(branches, buses, index_set_branch, index_set_bus, mapping_bus_to_idx, base_point=base_point)
+    K0 = _calculate_K0_const_qloss(branches, buses, index_set_branch, base_point=base_point)
+
+    # M is now (A^T B_d A + 1/2 * AA^T G_d A) with
+    # row and column of reference
+    # bus removed
+    M1 = At@Hm
+    M2 = AbAt@Km
+    M = M1 + 0.5 * M2
+
+    M0 = At@H0 + 0.5 * AbAt@K0
+
+    ## LU factorization
+    MLU_MP = scipy.sparse.linalg.splu(M)
+
+    #TODO: do the interfaces need Q flows?
+    if interfaces is None:
+        return MLU_MP, B_dA, G_dA
+    else:
+        if mapping_bus_to_idx is None:
+            mapping_branch_to_idx = {branch_n: i for i, branch_n in enumerate(index_set_branch)}
+        I = _calculate_interface_matrix(interfaces, index_set_interface, mapping_branch_to_idx)
+        B_dA_I = I@B_dA
+
+        return MLU_MP, B_dA, G_dA, B_dA_I, I
+
+def calculate_loss_distribution_p(branches, buses):
+    loss_distribution_p = {bk: 0 for bk in buses.keys()}
+    for k, branch in branches.items():
+        bf = branch['from_bus']
+        bt = branch['to_bus']
+        ll = branch['pt'] + branch['pf']
+        loss_distribution_p[bf] += ll / 2
+        loss_distribution_p[bt] += ll / 2
+    return loss_distribution_p
+
+def calculate_loss_distribution_q(branches, buses):
+    loss_distribution_q = {bk: 0 for bk in buses.keys()}
+    for k, branch in branches.items():
+        bf = branch['from_bus']
+        bt = branch['to_bus']
+        ll = branch['qt'] + branch['qf']
+        loss_distribution_q[bf] += ll / 2
+        loss_distribution_q[bt] += ll / 2
+    return loss_distribution_q
 
 class _ContingencyCompensator:
     def __init__(self, M, c, W, Wbar, phi_compensator, VA_compensator, branch_out):
@@ -967,7 +1330,7 @@ def calculate_ptdf(branches,buses,index_set_branch,index_set_bus,reference_bus,b
     graph = construct_connection_graph(branches, mapping_bus_to_idx)
     connected = check_network_connection(graph, index_set_bus)
 
-    J = _calculate_J11(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_idx,base_point,approximation_type=ApproximationType.PTDF)
+    J = _calculate_F_matrix_pflow(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_idx,base_point,approximation_type=ApproximationType.PTDF)
     A = calculate_adjacency_matrix_transpose(branches,index_set_branch,index_set_bus,mapping_bus_to_idx)
     M = A@J
 
@@ -1061,10 +1424,10 @@ def calculate_ptdf_ldf(branches,buses,index_set_branch,index_set_bus,reference_b
 
     _ref_bus_idx = mapping_bus_to_idx[reference_bus]
 
-    J = _calculate_J11(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_idx,base_point,approximation_type=ApproximationType.PTDF_LOSSES)
-    L = _calculate_L11(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_idx,base_point)
-    Jc = _calculate_pf_constant(branches,buses,index_set_branch,base_point)
-    Lc = _calculate_pfl_constant(branches,buses,index_set_branch,base_point)
+    J = _calculate_F_matrix_pflow(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_idx,base_point,approximation_type=ApproximationType.PTDF_LOSSES)
+    L = _calculate_L_matrix_ploss(branches,buses,index_set_branch,index_set_bus,mapping_bus_to_idx,base_point)
+    Jc = _calculate_F0_const_pflow(branches,buses,index_set_branch,base_point)
+    Lc = _calculate_L0_const_ploss(branches,buses,index_set_branch,base_point)
 
     if np.all(Jc == 0) and np.all(Lc == 0):
         return np.zeros((_len_branch, _len_bus)), np.zeros((_len_branch, _len_bus)), np.zeros((1,_len_branch))
