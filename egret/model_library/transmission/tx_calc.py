@@ -1001,7 +1001,7 @@ def calculate_fdf_p_factorization(branches,buses,index_set_branch,index_set_bus,
         #TODO: should interfaces use FDF or DC power flow sensitivities? (related questions on losses and Q flow)
         B_dA_I = I@B_dA
 
-        return MLU_MP, Fm, Lm, M0, ref_bus_mask, contingency_compensators, B_dA_I, I
+        return MLU_MP, Fm_masked, Lm_masked, M0, ref_bus_mask, contingency_compensators, B_dA_I, I
 
 
 def calculate_fdf_q_factorization(branches,buses,index_set_branch,index_set_bus,

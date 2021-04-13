@@ -459,18 +459,21 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
 
         # shape VA explicitly as a column vector
         # (needed for some 0-dim arrays)
-        VA = self._insert_reference_bus(VA,0)
+#        VA = self._insert_reference_bus(VA,0)
         VA.shape = (VA.shape[0],1)
 
         if masked:
-            PFV  = self.B_dA_masked@VA
-            PFV += self.phase_shift_flow_adjuster_array_masked
+            PFV  = np.asmatrix(self.B_dA_masked@VA)
+            if self.phase_shift_flow_adjuster_array is not None:
+                PFV += self.phase_shift_flow_adjuster_array_masked
         else:
-            PFV  = self.B_dA@VA
-            PFV += self.phase_shift_flow_adjuster_array
+            PFV  = np.asmatrix(self.B_dA@VA)
+            if self.phase_shift_flow_adjuster_array is not None:
+                PFV += self.phase_shift_flow_adjuster_array
 
-        PFV_I = self.B_dA_I@VA
-        PFV_I += self.phase_shift_flow_adjuster_array_interface
+        PFV_I = np.asmatrix(self.B_dA_I@VA)
+        if self.phase_shift_flow_adjuster_array_interface is not None:
+            PFV_I += self.phase_shift_flow_adjuster_array_interface
 
         ## make back to row-looking vectors
         PFV = PFV.T
@@ -642,8 +645,9 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
     def __init__(self, branches, buses, reference_bus, base_point,
                        ptdf_options, branches_keys = None, buses_keys = None,
                        interfaces = None, contingencies = None):
-        self.phase_shift_flow_adjuster_array = None
         self.phi_adjust_array = None
+        self.phase_shift_flow_adjuster_array = None
+        self.phase_shift_flow_adjuster_array_interface = None
         super().__init__(branches, buses, reference_bus, base_point,
                        ptdf_options, branches_keys=branches_keys, buses_keys=buses_keys,
                        interfaces=interfaces, contingencies=contingencies)
@@ -703,7 +707,8 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
             ptdf_row = self._get_ptdf_row(branch_name)
             branch_idx = self._branchname_to_index_map[branch_name]
             const = ptdf_row@self.M0 + self._get_tseries_flow_const(branch_name)
-            self._ptdf_const[branch_name] = const
+            self._ptdf_const[branch_name] = const[0]
+            const = const[0]
 
         return const
 
@@ -718,7 +723,7 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
             pldf_row = self._get_pldf_row(branch_name)
             branch_idx = self._branchname_to_index_map[branch_name]
             const = pldf_row@self.M0 + self._get_tseries_loss_const(branch_name)
-            self._pldf_const[branch_name] = const
+            self._pldf_const[branch_name] = const[0]
 
         return const
 
@@ -769,7 +774,7 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
         bus_map = self._busname_to_index_map
         #TODO: check that RHS is summing the correcet axis (not sure if needs to be row or column)
         RHS = self.G_dA.sum(axis=0)
-        LF_mask = self.MLU.solve(RHS.T[self.ref_bus_mask])
+        LF_mask = self.MLU.solve(RHS.T)
         LF = np.insert(LF_mask,bus_map[self._reference_bus],[0],axis=0)
         LF_dict = {b:LF[i].item() for b,i in bus_map.items()}
         offset = np.array(LF_mask.T@self.M0).item()
