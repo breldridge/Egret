@@ -13,6 +13,7 @@ typically used for buses (including loads and shunts)
 """
 import pyomo.environ as pe
 import egret.model_library.decl as decl
+from pyomo.core.util import quicksum
 from egret.model_library.defn import FlowType, CoordinateType, ApproximationType
 from math import tan,  radians
 
@@ -334,11 +335,11 @@ def declare_eq_ploss_ptdf_approx(model, PTDF, rel_ptdf_tol=None, abs_ptdf_tol=No
     Create the equality constraint or expression for total real power losses (from PTDF approximation)
     """
 
-    model = m
+    m = model
 
     ploss_is_var = isinstance(m.ploss, pe.Var)
     if ploss_is_var:
-        m.eq_ploss = pe.Constraint(con_set)
+        m.eq_ploss = pe.Constraint()
     else:
         if not isinstance(m.ploss, pe.Expression):
             raise Exception("Unrecognized type for m.ploss", m.ploss.pprint())
@@ -348,15 +349,15 @@ def declare_eq_ploss_ptdf_approx(model, PTDF, rel_ptdf_tol=None, abs_ptdf_tol=No
     if abs_ptdf_tol is None:
         abs_ptdf_tol = 0.
 
-    const = PTDF.get_branch_ptdf_const(branch_name)
-    max_coef = PTDF.get_branch_ptdf_abs_max(branch_name)
+    const = PTDF.get_lossoffset()
+    max_coef = PTDF.get_lossfactor_abs_max()
     ptdf_tol = max(abs_ptdf_tol, rel_ptdf_tol*max_coef)
     m_p_nw = m.p_nw
     ## if model.p_nw is Var, we can use LinearExpression
     ## to build these dense constraints much faster
     coef_list = []
     var_list = []
-    for bus_name, coef in PTDF.get_ploss_sens_iterator():
+    for bus_name, coef in PTDF.get_lossfactor_iterator():
         if abs(coef) >= ptdf_tol:
             coef_list.append(coef)
             var_list.append(m_p_nw[bus_name])

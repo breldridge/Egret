@@ -607,23 +607,20 @@ def constraint_resid_to_string(name, con, resid):
         return '{0:10.4g} | {2:10.4} <= {3:10.4g} <= {4:10.4g} : {1}'.format(resid, name, value(con.lower), value(con.body), value(con.upper))
 
 
-# if __name__ == '__main__':
-#     import os
-#     from egret.parsers.matpower_parser import create_ModelData
-#
-#     path = os.path.dirname(__file__)
-#     print(path)
-#     filename = 'pglib_opf_case30_ieee.m'
-#     test_case = os.path.join(path, '../../download/pglib-opf-master/', filename)
-#     md_dict = create_ModelData(test_case)
-#
-#     dcopf_model = create_ptdf_dcopf_model
-#
-#     kwargs = {'ptdf_options': {'save_to': test_case + '.pickle'}}
-#     md_serialization, results = solve_dcopf(md_dict, "ipopt", dcopf_model_generator=dcopf_model, solver_tee=False,
-#                                             return_results=True, **kwargs)
-#
-#     kwargs = {'ptdf_options': {'load_from': test_case + '.pickle'}}
-#     md_deserialization, results = solve_dcopf(md_dict, "ipopt", dcopf_model_generator=dcopf_model, solver_tee=False,
-#                                               return_results=True, **kwargs)
+if __name__ == '__main__':
+    import os
+    from egret.parsers.matpower_parser import create_ModelData
+
+    path = os.path.dirname(__file__)
+    print(path)
+    #filename = 'pglib_opf_case3375wp_k.m'
+    filename = 'pglib_opf_case118_ieee.m'
+    test_case = os.path.join(path, '../thirdparty/pglib-opf-master/', filename)
+    md_dict = create_ModelData(test_case)
+
+    dcopf_model = create_ptdf_dcopf_model
+
+    kwargs = {'ptdf_options': {}}
+    md_serialization, results = solve_dcopf(md_dict, "gurobi_persistent", dcopf_model_generator=dcopf_model, solver_tee=False,
+                                             return_results=True, **kwargs)
 

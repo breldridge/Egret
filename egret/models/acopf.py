@@ -711,7 +711,7 @@ if __name__ == '__main__':
 
     path = os.path.dirname(__file__)
     filename = 'pglib_opf_case14_ieee.m'
-    matpower_file = os.path.join(path, '../../download/pglib-opf/', filename)
+    matpower_file = os.path.join(path, '../thirdparty/pglib-opf-master/', filename)
     model_data = create_ModelData(matpower_file)
     kwargs = {'include_feasibility_slack':False}
     md,m,results = solve_acopf(model_data, "ipopt",acopf_model_generator=create_psv_acopf_model,return_model=True, return_results=True,**kwargs)

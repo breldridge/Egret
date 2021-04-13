@@ -293,7 +293,7 @@ def _get_susceptance(branch, approximation_type):
     return b
 
 
-def _calculate_Bd(branches,index_set_branch,base_point=BasePointType.FLATSTART,approximation_type=ApproximationType.PTDF):
+def _calculate_Bd(branches,index_set_branch,buses=None,base_point=BasePointType.FLATSTART,approximation_type=ApproximationType.PTDF):
     """
     Compute the power flow Jacobian for partial derivative of real power flow to voltage angle
     """
@@ -879,7 +879,10 @@ def calculate_ptdf_factorization(branches,buses,index_set_branch,index_set_bus,r
 
     At_masked = At[ref_bus_mask]
 
-    Bd = _calculate_Bd(branches, index_set_branch, base_point=base_point)
+    if base_point == BasePointType.FLATSTART:
+        Bd = _calculate_Bd(branches, index_set_branch, base_point=base_point)
+    else:
+        Bd = _calculate_Bd(branches, index_set_branch, buses=buses, base_point=base_point)
     B_dA = Bd@(At_masked.T)
 
     # M is now (A^T B_d A) with
@@ -956,11 +959,16 @@ def calculate_fdf_p_factorization(branches,buses,index_set_branch,index_set_bus,
                                    base_point=base_point)
     L0 = _calculate_L0_const_ploss(branches, buses, index_set_branch, base_point=base_point)
 
+    Fm_masked = Fm.T[ref_bus_mask].T
+    Lm_masked = Lm.T[ref_bus_mask].T
+
+
     # M is now (A^T B_d A + 1/2 * AA^T G_d A) with
     # row and column of reference
     # bus removed
-    M1 = At_masked@Fm
-    M2 = AbAt_masked@Lm
+    #TODO: Fm and Lm apparently need masks as well?
+    M1 = At_masked@Fm_masked
+    M2 = AbAt_masked@Lm_masked
     M = M1 + 0.5 * M2
 
     M0 = At_masked@F0 + 0.5 * AbAt_masked@L0
@@ -970,6 +978,7 @@ def calculate_fdf_p_factorization(branches,buses,index_set_branch,index_set_bus,
 
     # Basic DC power flow factorization for contingency compensators
     Bd = _calculate_Bd(branches, index_set_branch)
+    B_dA = Bd@(At_masked.T)
     M_cc = At_masked@Bd@(At_masked.T)
     MLU_cc = scipy.sparse.linalg.splu(M_cc)
 
