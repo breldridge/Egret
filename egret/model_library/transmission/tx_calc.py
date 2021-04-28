@@ -942,8 +942,8 @@ def calculate_fdf_p_factorization(branches,buses,index_set_branch,index_set_bus,
     if not connected:
         raise RuntimeError("Network is not connected, cannot use PTDF formulation")
 
-    #(A^T)
-    At = calculate_adjacency_matrix_transpose(branches,index_set_branch,index_set_bus,mapping_bus_to_idx)
+    #(A^T) [note: Adj matrix is defined as reverse of what is in S/D/C-LOPF paper]
+    At = -calculate_adjacency_matrix_transpose(branches,index_set_branch,index_set_bus,mapping_bus_to_idx)
     AbAt = calculate_absolute_adjacency_matrix(At)
 
     ref_bus_mask = np.ones(_len_bus, dtype=bool)
@@ -993,7 +993,7 @@ def calculate_fdf_p_factorization(branches,buses,index_set_branch,index_set_bus,
         contingency_compensators = {}
 
     if interfaces is None:
-        return MLU_MP, Fm, Lm, M0, ref_bus_mask, contingency_compensators
+        return MLU_MP, Fm, Lm, M0, F0, L0, ref_bus_mask, contingency_compensators
     else:
         if mapping_bus_to_idx is None:
             mapping_branch_to_idx = {branch_n: i for i, branch_n in enumerate(index_set_branch)}
@@ -1001,7 +1001,7 @@ def calculate_fdf_p_factorization(branches,buses,index_set_branch,index_set_bus,
         #TODO: should interfaces use FDF or DC power flow sensitivities? (related questions on losses and Q flow)
         B_dA_I = I@B_dA
 
-        return MLU_MP, Fm_masked, Lm_masked, M0, ref_bus_mask, contingency_compensators, B_dA_I, I
+        return MLU_MP, Fm_masked, Lm_masked, M0, F0, L0, ref_bus_mask, contingency_compensators, B_dA_I, I
 
 
 def calculate_fdf_q_factorization(branches,buses,index_set_branch,index_set_bus,
@@ -1064,23 +1064,27 @@ def calculate_fdf_q_factorization(branches,buses,index_set_branch,index_set_bus,
         return MLU_MP, B_dA, G_dA, B_dA_I, I
 
 def calculate_loss_distribution_p(branches, buses):
+    losses = {k:branch['pt'] + branch['pf'] for k,branch in branches.items()}
+    total_losses = sum(ll for ll in losses.values())
     loss_distribution_p = {bk: 0 for bk in buses.keys()}
     for k, branch in branches.items():
         bf = branch['from_bus']
         bt = branch['to_bus']
-        ll = branch['pt'] + branch['pf']
-        loss_distribution_p[bf] += ll / 2
-        loss_distribution_p[bt] += ll / 2
+        ll = losses[k]/2
+        loss_distribution_p[bf] += ll / total_losses
+        loss_distribution_p[bt] += ll / total_losses
     return loss_distribution_p
 
 def calculate_loss_distribution_q(branches, buses):
+    losses = {k:branch['qt'] + branch['qf'] for k,branch in branches.items()}
+    total_losses = sum(ll for ll in losses.values())
     loss_distribution_q = {bk: 0 for bk in buses.keys()}
     for k, branch in branches.items():
         bf = branch['from_bus']
         bt = branch['to_bus']
-        ll = branch['qt'] + branch['qf']
-        loss_distribution_q[bf] += ll / 2
-        loss_distribution_q[bt] += ll / 2
+        ll = losses[k] / 2
+        loss_distribution_q[bf] += ll / total_losses
+        loss_distribution_q[bt] += ll / total_losses
     return loss_distribution_q
 
 class _ContingencyCompensator:

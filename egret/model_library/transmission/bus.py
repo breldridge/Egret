@@ -317,10 +317,10 @@ def declare_eq_p_balance_lopf(model, index_set, bus_p_loads, gens_by_bus, bus_gs
             if idx == 'linearize_shunts':
                 if val == True:
                     p_expr -= sum( bus_gs_fixed_shunts[b] * (2 * vm_by_bus[b] * m.vm[b] - vm_by_bus[b] ** 2) \
-                        for bus_name in index_set if bus_gs_fixed_shunts[bus_name] != 0.0)
+                        for b in index_set if bus_gs_fixed_shunts[b] != 0.0)
                 elif val == False:
                     p_expr -= sum( bus_gs_fixed_shunts[b] * vm_by_bus[b] ** 2 \
-                        for bus_name in index_set if bus_gs_fixed_shunts[bus_name] != 0.0)
+                        for b in index_set if bus_gs_fixed_shunts[b] != 0.0)
                 else:
                     raise Exception('linearize_shunts option is invalid.')
 

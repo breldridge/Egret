@@ -686,6 +686,8 @@ def solve_acopf(model_data,
             k_dict['pt'] = value(m.pt[k])
             k_dict['qf'] = value(m.qf[k])
             k_dict['qt'] = value(m.qt[k])
+            k_dict['pfl'] = value(m.pf[k]) + value(m.pt[k])
+            k_dict['qfl'] = value(m.qf[k]) + value(m.qt[k])
         if hasattr(m,'irf'):
             b = k_dict['from_bus']
             k_dict['pf'] = value(tx_calc.calculate_p(value(m.ifr[k]), value(m.ifj[k]), value(m.vr[b]), value(m.vj[b])))

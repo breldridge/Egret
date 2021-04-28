@@ -303,7 +303,7 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
         else:
             # calculate row
             branch_idx = self._branchname_to_index_map[branch_name]
-            PTDF_row = self.MLU.solve(self.B_dA[branch_idx].toarray(out=self._bus_sensi_buffer)[0], trans='T')
+            PTDF_row = -self.MLU.solve(self.B_dA[branch_idx].toarray(out=self._bus_sensi_buffer)[0], trans='T')
             self._ptdf_rows[branch_name] = PTDF_row
         return PTDF_row
 
@@ -448,14 +448,15 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
 
         return PF_delta
 
+# TODO: reimplement for VirtualFDFpMatrix
     def _calculate_PFV(self, mb, masked):
         NWV = np.fromiter((value(mb.p_nw[b]) for b in self.buses_keys_no_ref), float, count=len(self.buses_keys_no_ref))
-        if self.phi_adjust_array is not None:
-            NWV += self.phi_adjust_array.T
+        if isinstance(self, (VirtualFDFpMatrix,VirtualFDFpqMatrix)):
+            NWV = np.asmatrix(NWV) + self.M0
+            VA = self.MLU.solve(NWV.A[0])
         else:
-            NWV = np.asmatrix(NWV)
-
-        VA = self.MLU.solve(NWV.A[0])
+            NWV += self.phi_adjust_array.T
+            VA = self.MLU.solve(NWV.A[0])
 
         # shape VA explicitly as a column vector
         # (needed for some 0-dim arrays)
@@ -657,7 +658,7 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
 
     def _calculate_factorization(self):
         logger.info("Calculating FDF P-Matrix Factorization")
-        MLU, B_dA, G_dA, M0, ref_bus_mask, contingency_compensators, B_dA_I, I = \
+        MLU, B_dA, G_dA, M0, B0, G0, ref_bus_mask, contingency_compensators, B_dA_I, I = \
                 tx_calc.calculate_fdf_p_factorization(self._branches,
                                                      self._buses,self.branches_keys,
                                                      self.buses_keys,
@@ -673,6 +674,8 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
         self.B_dA = B_dA
         self.G_dA = G_dA
         self.M0 = M0
+        self.B0 = B0
+        self.G0 = G0
 
         self.ref_bus_mask = ref_bus_mask
         self.contingency_compensators = contingency_compensators
@@ -772,9 +775,8 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
     def _calculate_lossfactors(self):
         logger.info("Calculating Loss Factors")
         bus_map = self._busname_to_index_map
-        #TODO: check that RHS is summing the correcet axis (not sure if needs to be row or column)
         RHS = self.G_dA.sum(axis=0)
-        LF_mask = self.MLU.solve(RHS.T)
+        LF_mask = -self.MLU.solve(RHS.T)
         LF = np.insert(LF_mask,bus_map[self._reference_bus],[0],axis=0)
         LF_dict = {b:LF[i].item() for b,i in bus_map.items()}
         offset = np.array(LF_mask.T@self.M0).item()
@@ -797,6 +799,38 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
         branches = self._branches
         L0 = tx_calc._calculate_L0_const_ploss(branches, buses, [branch_name], base_point=BasePointType.SOLUTION)
         return L0
+
+
+    def _calculate_PFV(self, mb, masked):
+        NWV = np.fromiter((value(mb.p_nw[b]) for b in self.buses_keys_no_ref), float, count=len(self.buses_keys_no_ref))
+        NWV = np.asmatrix(NWV) + self.M0
+        VA = self.MLU.solve(NWV.A[0])
+
+        # shape VA explicitly as a column vector
+        # (needed for some 0-dim arrays)
+#        VA = self._insert_reference_bus(VA,0)
+        VA.shape = (VA.shape[0],1)
+
+        if masked:
+            PFV  = -np.asmatrix(self.B_dA_masked@VA)
+            PFV += np.asmatrix(self.B0).T
+        else:
+            PFV  = -np.asmatrix(self.B_dA@VA)
+            PFV += np.asmatrix(self.B0).T
+
+        PFV_I = np.asmatrix(self.B_dA_I@VA)
+
+        ## make back to row-looking vectors
+        PFV = PFV.T
+        PFV_I = PFV_I.T
+
+        ## VA is reversed in sign
+        if masked:
+            VA = VA.T[0]
+        else:
+            VA = -self._insert_reference_bus(VA.T[0], 0.)
+
+        return PFV.A[0], PFV_I.A[0], VA
 
 
 class VirtualFDFpqMatrix(VirtualFDFpMatrix):
