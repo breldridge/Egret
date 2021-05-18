@@ -628,8 +628,6 @@ def get_power_flow_expr_ptdf_approx(model, branch_name, PTDF, rel_ptdf_tol=None,
     """
     Create a pyomo power flow expression from PTDF matrix
     """
-    #TODO: should we add "QTDFs" to the PTDF object or create a new QTDF object?
-
     if rel_ptdf_tol is None:
         rel_ptdf_tol = 0.
     if abs_ptdf_tol is None:
@@ -651,6 +649,8 @@ def get_power_flow_expr_ptdf_approx(model, branch_name, PTDF, rel_ptdf_tol=None,
         if abs(coef) >= ptdf_tol:
             coef_list.append(coef)
             var_list.append(m_p_nw[bus_name])
+        else:
+            const += coef * m_p_nw[bus_name].expr()
 
     if isinstance(m_p_nw, pe.Var):
         expr = LinearExpression(linear_vars=var_list, linear_coefs=coef_list, constant=const)

@@ -345,6 +345,12 @@ def _calculate_F_matrix_pflow(branches,buses,index_set_branch,index_set_bus,mapp
         from_bus = branch['from_bus']
         to_bus = branch['to_bus']
 
+        tau = 1.0
+        shift = 0
+        if branch['branch_type'] == 'transformer':
+            tau = branch['transformer_tap_ratio']
+            shift = -math.radians(branch['transformer_phase_shift'])
+
         b = _get_susceptance(branch, approximation_type)
 
         if base_point == BasePointType.FLATSTART:
@@ -356,7 +362,7 @@ def _calculate_F_matrix_pflow(branches,buses,index_set_branch,index_set_bus,mapp
             tn = buses[from_bus]['va']
             tm = buses[to_bus]['va']
 
-            val = -b * vn * vm * cos(tn - tm)
+            val = -b * vn * vm * cos(tn - tm + shift)
 
         idx_col = mapping_bus_to_idx[from_bus]
         row.append(idx_row)
@@ -389,8 +395,10 @@ def _calculate_L_matrix_ploss(branches,buses,index_set_branch,index_set_bus,mapp
         to_bus = branch['to_bus']
 
         tau = 1.0
+        shift = 0.0
         if branch['branch_type'] == 'transformer':
             tau = branch['transformer_tap_ratio']
+            shift = -math.radians(branch['transformer_phase_shift'])
         g = calculate_conductance(branch)/tau
 
         if base_point == BasePointType.FLATSTART:
@@ -404,17 +412,18 @@ def _calculate_L_matrix_ploss(branches,buses,index_set_branch,index_set_bus,mapp
             tn = buses[from_bus]['va']
             tm = buses[to_bus]['va']
 
-        val = 2 * g * vn * vm * sin(tn - tm)
+        val = 2 * g * vn * vm * sin(tn - tm + shift)
 
-        idx_col = mapping_bus_to_idx[from_bus]
-        row.append(idx_row)
-        col.append(idx_col)
-        data.append(val)
+        if val != 0:
+            idx_col = mapping_bus_to_idx[from_bus]
+            row.append(idx_row)
+            col.append(idx_col)
+            data.append(val)
 
-        idx_col = mapping_bus_to_idx[to_bus]
-        row.append(idx_row)
-        col.append(idx_col)
-        data.append(-val)
+            idx_col = mapping_bus_to_idx[to_bus]
+            row.append(idx_row)
+            col.append(idx_col)
+            data.append(-val)
 
     L = sp.coo_matrix((data,(row,col)),shape=(_len_branch,_len_bus))
     return L.tocsr()
@@ -697,7 +706,7 @@ def _calculate_F0_const_pflow(branches,buses,index_set_branch,base_point=BasePoi
         shift = 0.0
         if branch['branch_type'] == 'transformer':
             tau = branch['transformer_tap_ratio']
-            shift = math.radians(branch['transformer_phase_shift'])
+            shift = -math.radians(branch['transformer_phase_shift'])
         g = calculate_conductance(branch)
         b = calculate_susceptance(branch)/tau
 
@@ -738,7 +747,7 @@ def _calculate_L0_const_ploss(branches,buses,index_set_branch,base_point=BasePoi
         shift = 0.0
         if branch['branch_type'] == 'transformer':
             tau = branch['transformer_tap_ratio']
-            shift = math.radians(branch['transformer_phase_shift'])
+            shift = -math.radians(branch['transformer_phase_shift'])
         _g = calculate_conductance(branch)
         g = _g/tau
         g2 = _g/tau**2
@@ -780,9 +789,9 @@ def _calculate_H0_const_qflow(branches,buses,index_set_branch,base_point=BasePoi
         if branch['branch_type'] == 'transformer':
             tau = branch['transformer_tap_ratio']
             shift = -math.radians(branch['transformer_phase_shift'])
-        g = calculate_conductance(branch)
-        b = calculate_susceptance(branch)
-        bc = branch['charging_susceptance']
+        g = calculate_conductance(branch)/tau
+        b = calculate_susceptance(branch)/tau**2
+        bc = branch['charging_susceptance']/tau**2
 
         if base_point == BasePointType.FLATSTART:
             vn = 1.
@@ -795,8 +804,8 @@ def _calculate_H0_const_qflow(branches,buses,index_set_branch,base_point=BasePoi
             tn = buses[from_bus]['va']
             tm = buses[to_bus]['va']
 
-        H0_const[idx_row] = 0.5 * (b+bc/2) * (vn**2/tau**2 - vm**2) \
-                               + g * vn * vm * sin(tn - tm + shift)/tau
+        H0_const[idx_row] = 0.5 * (b+bc/2) * (vn**2 - vm**2) \
+                               + g * vn * vm * sin(tn - tm + shift)
 
     return H0_const
 
@@ -824,6 +833,7 @@ def _calculate_K0_const_qloss(branches,buses,index_set_branch,base_point=BasePoi
             shift = -math.radians(branch['transformer_phase_shift'])
         b = calculate_susceptance(branch)
         bc = branch['charging_susceptance']
+        bb = (b + bc)/tau**2
 
         if base_point == BasePointType.FLATSTART:
             vn = 1.
@@ -836,8 +846,8 @@ def _calculate_K0_const_qloss(branches,buses,index_set_branch,base_point=BasePoi
             tn = buses[from_bus]['va']
             tm = buses[to_bus]['va']
 
-        K0_const[idx_row] = (b+bc/2) * ((vn/tau)**2 + vm**2) \
-                               - 2 * b * vn * vm * cos(tn - tm + shift) / tau
+        K0_const[idx_row] = bb * (vn**2 + vm**2) \
+                               - 2 * b * vn * vm * cos(tn - tm + shift)
 
     return K0_const
 

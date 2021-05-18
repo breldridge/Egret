@@ -606,6 +606,8 @@ def add_violations(lazy_violations, flows, mb, md, solver, ptdf_options,
     viol_in_mb = mb._idx_monitored
     for i, bn in _iter_over_viol_set(lazy_violations.branch_lazy_violations, mb, PTDF, abs_ptdf_tol, rel_ptdf_tol):
         thermal_limit = PTDF.branch_limits_array_masked[i]
+        if hasattr(PTDF, '_q_correction'):
+            thermal_limit -= PTDF._q_correction[bn]
         if flows.PFV is None:
             logger.debug(prepend_str+_generate_flow_monitor_message('branch', bn, time=time))
         else:
@@ -720,6 +722,8 @@ def add_initial_monitored_branches(mb, branches, branches_in_service, ptdf_optio
     viol_in_mb = mb._idx_monitored
     for i, bn in _iter_over_initial_set(branches, branches_in_service, PTDF):
         thermal_limit = PTDF.branch_limits_array_masked[i]
+        if hasattr(PTDF,'_q_correction'):
+            thermal_limit -= PTDF._q_correction[bn]
         mb.pf[bn] = libbranch.get_power_flow_expr_ptdf_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol, rel_ptdf_tol=rel_ptdf_tol)
         constr[bn], _ = _generate_branch_thermal_bounds(mb, bn, thermal_limit)
         viol_in_mb.append(i)

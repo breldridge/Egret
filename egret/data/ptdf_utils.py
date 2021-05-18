@@ -448,7 +448,6 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
 
         return PF_delta
 
-# TODO: reimplement for VirtualFDFpMatrix
     def _calculate_PFV(self, mb, masked):
         NWV = np.fromiter((value(mb.p_nw[b]) for b in self.buses_keys_no_ref), float, count=len(self.buses_keys_no_ref))
         if isinstance(self, (VirtualFDFpMatrix,VirtualFDFpqMatrix)):
@@ -758,6 +757,24 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
             #TODO: find best spot to update loss factor residuals
         return PLDF_row
 
+    def add_q_correction(self):
+        # Calculates thermal limit capacity that i "reserved" for reactive power.
+        # This function should only be called in the P-LOPF.
+        from math import sqrt
+        branches = self._branches
+        self._q_correction = dict()
+        for bn, branch in branches.items():
+            pmax = branch['rating_long_term']
+            if pmax is None:
+                self._q_correction[bn] = 0
+            else:
+                sf = branch['pf']**2 + branch['qf']**2
+                st = branch['pt']**2 + branch['qt']**2
+                if sf > st:
+                    self._q_correction[bn] = pmax - sqrt(pmax**2 - branch['qf']**2)
+                else:
+                    self._q_correction[bn] = pmax - sqrt(pmax**2 - branch['qt']**2)
+
     def _update_lossfactor_residuals(self):
         #TODO: also need to update the loss constraints for lazy/persistent solve
         logger.info("Updating Loss Residuals")
@@ -775,8 +792,7 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
     def _calculate_lossfactors(self):
         logger.info("Calculating Loss Factors")
         bus_map = self._busname_to_index_map
-        RHS = self.G_dA.sum(axis=0)
-        LF_mask = -self.MLU.solve(RHS.T)
+        LF_mask = -self.MLU.solve(self.G_dA.toarray().sum(axis=0),trans='T')
         LF = np.insert(LF_mask,bus_map[self._reference_bus],[0],axis=0)
         LF_dict = {b:LF[i].item() for b,i in bus_map.items()}
         offset = np.array(LF_mask.T@self.M0).item()
@@ -803,7 +819,7 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
 
     def _calculate_PFV(self, mb, masked):
         NWV = np.fromiter((value(mb.p_nw[b]) for b in self.buses_keys_no_ref), float, count=len(self.buses_keys_no_ref))
-        NWV = np.asmatrix(NWV) + self.M0
+        NWV = np.asmatrix(NWV + self.M0)
         VA = self.MLU.solve(NWV.A[0])
 
         # shape VA explicitly as a column vector

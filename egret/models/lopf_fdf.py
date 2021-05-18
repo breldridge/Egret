@@ -223,6 +223,7 @@ def create_p_lopf_model(model_data, include_feasibility_slack=False, base_point=
     ptdf_options = lpu.populate_default_ptdf_options(ptdf_options)
 
     baseMVA = model_data.data['system']['baseMVA']
+    #model_data.data['system']['load_mismatch_cost'] = 1000
     lpu.check_and_scale_ptdf_options(ptdf_options, baseMVA)
     
     md = model_data.clone_in_service()
@@ -259,7 +260,7 @@ def create_p_lopf_model(model_data, include_feasibility_slack=False, base_point=
     _, bus_gs_fixed_shunts = tx_utils.dict_of_bus_fixed_shunts(buses, shunts)
 
     ### declare the generator real power
-    pg_init = {k: (gen_attrs['p_min'][k] + gen_attrs['p_max'][k]) / 2.0 for k in gen_attrs['pg']}
+    pg_init = {k: gen_attrs['pg'][k] for k in gens.keys()}
     libgen.declare_var_pg(model, gen_attrs['names'], initialize=gen_attrs['pg'],
                           bounds=zip_items(gen_attrs['p_min'], gen_attrs['p_max'])
                           )
@@ -329,6 +330,7 @@ def create_p_lopf_model(model_data, include_feasibility_slack=False, base_point=
 
     #ptdfobject
     PTDF = ptdf_utils.VirtualFDFpMatrix(branches, buses, reference_bus, base_point, ptdf_options, branches_keys=branches_idx, buses_keys=buses_idx)
+    PTDF.add_q_correction()
 
     model._PTDF = PTDF
     model._ptdf_options = ptdf_options
@@ -354,10 +356,11 @@ def create_p_lopf_model(model_data, include_feasibility_slack=False, base_point=
         lpu.add_monitored_flow_tracker(model)
 
         ### add initial branches to monitored set
+        #TODO: it looks like this doesnt add any inital constraints?
         lpu.add_initial_monitored_branches(model, branches, branches_idx, ptdf_options, PTDF)
 
     else:
-        p_max = {k: branches[k]['rating_long_term'] for k in branches.keys()}
+        p_max = {k: branches[k]['rating_long_term'] - PTDF._q_correction[k] for k in branches.keys()}
         ## add all the constraints
         ### declare the branch power flow approximation constraints
         #TODO: include losses in the equation
@@ -650,13 +653,16 @@ if __name__ == '__main__':
     import egret.data.test_utils as tu
     from egret.parsers.matpower_parser import create_ModelData
     from egret.models.acopf import solve_acopf
+    from egret.data.lopf_utils import case_names
 
     path = os.path.dirname(__file__)
     print(path)
-    filename = 'pglib_opf_case5_pjm.m'
+    #filename = 'pglib_opf_case5_pjm.m'
     #filename = 'pglib_opf_case1888_rte.m'
+    filename = case_names[20] + '.m'
     test_case = os.path.join(path, '../thirdparty/pglib-opf-master/', filename)
     model_data = create_ModelData(test_case)
+    print(filename)
 
     dcopf_model = create_p_lopf_model
     #dcopf_model = create_c_lopf_model
@@ -664,11 +670,12 @@ if __name__ == '__main__':
     #dcopf_model = create_s_lopf_model
 
 
-    md_ac, results = solve_acopf(model_data, "ipopt",return_model=False, return_results=True, solver_tee=False)
+    md_ac, m_ac, results = solve_acopf(model_data, "ipopt",return_model=True, return_results=True, solver_tee=True)
     print('Solved ACOPF base point.')
     print('..Total cost: ${}'.format(md_ac.data['system']['total_cost']))
     sd = tu.update_solution_dicts(md_ac, name='acopf')
     print(results['Solver'])
+    print(filename)
 
     kwargs = {'ptdf_options': {}}
     md_fdf, m_fdf, results = solve_lopf(md_ac, "gurobi_persistent", dcopf_model_generator=dcopf_model, solver_tee=False,
@@ -677,5 +684,5 @@ if __name__ == '__main__':
     sd = tu.update_solution_dicts(md_fdf, name='plopf', solution_dict=sd)
     tu.display_solution_dicts(sd, N=5)
     print(results['Solver'])
-    #m_fdf.pprint()
+    print(filename)
 
