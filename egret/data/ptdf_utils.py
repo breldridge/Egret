@@ -745,6 +745,9 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
         LF0 = self._lossoffset_resid
         return LF, LF0
 
+    def get_ploss_distribution(self):
+        return self._loss_distribution
+
     #TODO: do we also need a "get_interface_pldf_row()"? Might either calculate interface limits with or without loss adjustment
     def _get_pldf_row(self, branch_name):
         if branch_name in self._pldf_rows:
@@ -794,7 +797,7 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
         bus_map = self._busname_to_index_map
         LF_mask = -self.MLU.solve(self.G_dA.toarray().sum(axis=0),trans='T')
         LF = np.insert(LF_mask,bus_map[self._reference_bus],[0],axis=0)
-        LF_dict = {b:LF[i].item() for b,i in bus_map.items()}
+        LF_dict = {b:LF[i] for b,i in bus_map.items()}
         offset = np.array(LF_mask.T@self.M0).item()
         offset += sum([self._get_tseries_loss_const(bn) for bn in self._branches.keys()]).item()
         self._lossfactor = LF_dict
@@ -867,7 +870,7 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
     def _calculate_factorization(self):
         super()._calculate_factorization()
         logger.info("Calculating FDF Q-Matrix Factorization")
-        QMLU, QB_dA, QG_dA, QM0 = \
+        QMLU, QB_dA, QG_dA, QM0, QB0, QG0 = \
             tx_calc.calculate_fdf_q_factorization(self._branches,
                                                   self._buses, self.branches_keys,
                                                   self.buses_keys,
@@ -879,6 +882,8 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
         self.QB_dA = QB_dA  #TODO: consider renaming. These matrices no longer refer to susceptance and conductance
         self.QG_dA = QG_dA  # - I think they are now "swapped" but the B/G names are kept for consistency w/ PTDF functions
         self.QM0 = QM0
+        self.QB0 = QB0
+        self.QG0 = QG0
 
         # additional parameters for system losses
         self._calculate_qloss_distribution()
@@ -896,6 +901,20 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
         '''
         yield from zip(self.buses_keys_no_ref, self._get_qldf_row(branch_name))
 
+    def get_bus_vdf_iterator(self, bus_name):
+        '''
+        returns a (bus_name, coefficient) iterator for a given bus_name
+        '''
+        yield from zip(self.buses_keys_no_ref, self._get_vdf_row(bus_name))
+
+    def get_branch_qtdf_abs_max(self, branch_name):
+        '''
+        returns the maximum of the absolute value for any coefficent
+        in branch_name's qtdf row
+        '''
+        qtdf_row = self._get_qtdf_row(branch_name)
+        return np.abs(qtdf_row).max()
+
     def get_branch_qldf_abs_max(self, branch_name):
         '''
         returns the maximum of the absolute value for any coefficent
@@ -903,6 +922,14 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
         '''
         qldf_row = self._get_qldf_row(branch_name)
         return np.abs(qldf_row).max()
+
+    def get_branch_vdf_abs_max(self, bus_name):
+        '''
+        returns the maximum of the absolute value for any coefficent
+        in bus_name's vdf row
+        '''
+        vdf_row = self._get_vdf_row(bus_name)
+        return np.abs(vdf_row).max()
 
     def get_branch_qtdf_const(self, branch_name):
         '''
@@ -934,16 +961,39 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
 
         return const
 
-    def get_qlossfactor(self):
+    def get_bus_vdf_const(self, bus_name):
+        '''
+        returns the constant coefficient for bus_name 's
+        voltage magnitude equation (given bus net withdrawls)
+        '''
+        if bus_name in self._vdf_const.keys():
+            const = self._vdf_const[bus_name]
+        else:
+            vdf_row = self._get_vdf_row(bus_name)
+            bus_idx = self._busname_to_index_map[bus_name]
+            const = vdf_row@self.QM0
+            self._vdf_const[bus_name] = const
+
+        return const
+
+    def get_qlossfactor_iterator(self):
+        yield from self._qlossfactor.items()
+
+    def get_qlossfactor_abs_max(self):
         LF = self._qlossfactor
-        LF0 = self._qlossoffset
-        return LF, LF0
+        return np.abs([v for v in LF.values()]).max()
+
+    def get_qlossoffset(self):
+        return self._qlossoffset
 
     def get_qlossfactor_residuals(self):
         self._update_qlossfactor_residuals()
         LF = self._qlossfactor_resid
         LF0 = self._qlossoffset_resid
         return LF, LF0
+
+    def get_qloss_distribution(self):
+        return self._qloss_distribution
 
     def _get_qtdf_row(self, branch_name):
         if branch_name in self._qtdf_rows:
@@ -967,6 +1017,16 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
             #TODO: find best spot to update loss factor residuals
         return QLDF_row
 
+    def _get_vdf_row(self, bus_name):
+        if bus_name in self._vdf_rows:
+            VDF_row = self._vdf_rows[bus_name]
+        else:
+            # calculate row
+            bus_idx = self._busname_to_index_map[bus_name]
+            VDF_row = self.QMLU.solve(np.eye(len(self.buses_keys))[0], trans='T')
+            self._vdf_rows[bus_name] = VDF_row
+        return VDF_row
+
     def _update_qlossfactor_residuals(self):
         #TODO: also need to update the loss constraints for lazy/persistent solve
         logger.info("Updating Reactive Loss Residuals")
@@ -984,16 +1044,23 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
     def _calculate_qlossfactors(self):
         logger.info("Calculating Reactive Loss Factors")
         bus_map = self._busname_to_index_map
-        #TODO: check that RHS is summing the correcet axis (not sure if needs to be row or column)
-        RHS = self.QG_dA.sum(axis=0)
-        LF = self.QMLU.solve(RHS.toarray(out=self._bus_sensi_buffer)[0], trans='T')
-        LF_dict = {b:LF[i] for b,i in bus_map.items()}
-        offset = LF@self.QM0.solve(RHS.toarray(out=self._bus_sensi_buffer)[0], trans='T')
-        offset += sum([self._get_tseries_qloss_const(bn) for bn in self._branches.keys()])
-        self._qlossfactor = LF_dict
+        QLF = -self.QMLU.solve(self.QG_dA.toarray().sum(axis=0), trans='T')
+        QLF_dict = {b:QLF[i] for b,i in bus_map.items()}
+        offset = np.array(QLF.T @ self.QM0).item()
+        offset += sum([self._get_tseries_qloss_const(bn) for bn in self._branches.keys()]).item()
+        self._qlossfactor = QLF_dict
         self._qlossoffset = offset
-        self._qlossfactor_resid = LF_dict
+        self._qlossfactor_resid = QLF_dict
         self._qlossoffset_resid = offset
+
+    def _calculate_vmfactors(self):
+        logger.info("Calculating Voltage Magnitude Factors")
+        bus_map = self._busname_to_index_map
+        VDF = -self.QMLU.solve(np.eye(len(bus_map)), trans='T')
+        VDF_dict = {b:VDF[i] for b,i in bus_map.items()}
+        offset = np.array(VDF.T @ self.QM0).item()
+        self._vmfactor = VDF_dict
+        self._vmoffset = offset
 
     def _get_tseries_qflow_const(self, branch_name):
         #TODO: ideally would only send one branch and the from/to buses, but need to add stripped down function to tx_calc
@@ -1009,6 +1076,24 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
         K0 = tx_calc._calculate_K0_const_qloss(branches, buses, [branch_name], base_point=BasePointType.SOLUTION)
         return K0
 
+    def calculate_QFV(self, mb):
+        NWV = np.fromiter((value(mb.q_nw[b]) for b in self.buses_keys), float,
+                          count=len(self.buses_keys))
+        NWV = np.asmatrix(NWV + self.QM0)
+        VM = -self.QMLU.solve(NWV.A[0])
+
+        # shape VM explicitly as a column vector
+        # (needed for some 0-dim arrays)
+        #        VA = self._insert_reference_bus(VA,0)
+        VM.shape = (VM.shape[0], 1)
+
+        QFV = -np.asmatrix(self.QB_dA @ VM)
+        QFV += np.asmatrix(self.QB0).T
+
+        ## make back to row-looking vectors
+        QFV = QFV.T
+
+        return QFV.A[0], VM
 
 class PTDFMatrix(_PTDFManagerBase):
     '''

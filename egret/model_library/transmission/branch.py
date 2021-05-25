@@ -76,6 +76,24 @@ def declare_expr_pf(model, index_set, **kwargs):
     decl.declare_expr('pf', model=model, index_set=index_set, **kwargs)
 
 
+def declare_expr_qf(model, index_set, **kwargs):
+    """
+    Create expression for the reactive part of the power flow in the "from"
+    end of the transmission line
+    """
+    decl.declare_expr('qf', model=model, index_set=index_set, **kwargs)
+
+def declare_expr_sf( model, index_set, **kwargs):
+    """
+    Create expression for the reactive part of the power flow in the "from"
+    end of the transmission line
+    """
+    decl.declare_expr('sf', model=model, index_set=index_set, **kwargs)
+
+    m = model
+    for bn in index_set:
+        m.sf[bn] = pe.sqrt(m.pf[bn]**2 + m.qf[bn]**2)
+
 def declare_var_pf_slack_pos(model, index_set, **kwargs):
     """
     Create the positive slack variable for the real part of power flow
@@ -659,6 +677,40 @@ def get_power_flow_expr_ptdf_approx(model, branch_name, PTDF, rel_ptdf_tol=None,
 
     return expr
 
+def get_power_flow_expr_qtdf_approx(model, branch_name, PTDF, rel_ptdf_tol=None, abs_ptdf_tol=None):
+    """
+    Create a pyomo reactive power flow expression from PTDF matrix
+    """
+    if rel_ptdf_tol is None:
+        rel_ptdf_tol = 0.
+    if abs_ptdf_tol is None:
+        abs_ptdf_tol = 0.
+
+    const = PTDF.get_branch_qtdf_const(branch_name)
+
+    max_coef = PTDF.get_branch_qtdf_abs_max(branch_name)
+
+    ptdf_tol = max(abs_ptdf_tol, rel_ptdf_tol*max_coef)
+    ## NOTE: It would be easy to hold on to the 'ptdf' dictionary here, if we wanted to
+    m_q_nw = model.q_nw
+    ## if model.p_nw is Var, we can use LinearExpression
+    ## to build these dense constraints much faster
+    coef_list = []
+    var_list = []
+    for bus_name, coef in PTDF.get_branch_qtdf_iterator(branch_name):
+        if abs(coef) >= ptdf_tol:
+            coef_list.append(coef)
+            var_list.append(m_q_nw[bus_name])
+        else:
+            const += coef * m_q_nw[bus_name].expr()
+
+    if isinstance(m_q_nw, pe.Var):
+        expr = LinearExpression(linear_vars=var_list, linear_coefs=coef_list, constant=const)
+    else:
+        expr = quicksum( (coef*var for coef, var in zip(coef_list, var_list)), start=const, linear=True)
+
+    return expr
+
 
 def declare_eq_branch_power_ptdf_approx(model, index_set, PTDF, rel_ptdf_tol=None, abs_ptdf_tol=None):
     """
@@ -690,6 +742,33 @@ def declare_eq_branch_power_ptdf_approx(model, index_set, PTDF, rel_ptdf_tol=Non
         else:
             m.pf[branch_name] = expr
 
+def declare_eq_branch_power_qtdf_approx(model, index_set, PTDF, rel_ptdf_tol=None, abs_ptdf_tol=None):
+    """
+    Create the equality constraints or expressions for power (from PTDF
+    approximation) in the branch
+    """
+
+    m = model
+
+    con_set = decl.declare_set("_con_eq_branch_power_qtdf_approx_set", model, index_set)
+
+    qf_is_var = isinstance(m.qf, pe.Var)
+
+    if qf_is_var:
+        m.eq_qf_branch = pe.Constraint(con_set)
+    else:
+        if not isinstance(m.qf, pe.Expression):
+            raise Exception("Unrecognized type for m.qf", m.qf.pprint())
+
+    for branch_name in con_set:
+        expr = \
+            get_power_flow_expr_qtdf_approx(m, branch_name, PTDF, rel_ptdf_tol=rel_ptdf_tol, abs_ptdf_tol=abs_ptdf_tol)
+
+        if qf_is_var:
+            m.eq_qf_branch[branch_name] = \
+                m.qf[branch_name] == expr
+        else:
+            m.qf[branch_name] = expr
 
 def get_branch_loss_expr_ptdf_approx(model, branch_name, PTDF, rel_ptdf_tol=None, abs_ptdf_tol=None): 
     """
@@ -1074,7 +1153,7 @@ def declare_ineq_p_branch_thermal_bounds(model, index_set,
         if slack_cost_expr is None:
             raise Exception('No cost expression for slacks, but slacks=True')
 
-    m.ineq_pf_branch_thermal_bounds = pe.Constraint(con_set)
+    m.ineq_branch_thermal_bounds = pe.Constraint(con_set)
 
     if approximation_type == ApproximationType.BTHETA or \
             approximation_type == ApproximationType.PTDF:
@@ -1097,6 +1176,81 @@ def declare_ineq_p_branch_thermal_bounds(model, index_set,
 
             m.ineq_pf_branch_thermal_bounds[branch_name] = \
                     generate_thermal_bounds(m.pf[branch_name], -limit, limit, neg_slack, pos_slack)
+
+def declare_ineq_pq_branch_thermal_bounds(model, index_set, branches, thermal_limits,
+                                          approximation_type=ApproximationType.PTDF_LOSSES,
+                                          slacks=False, slack_cost_expr=None):
+    """
+    Create an inequality constraint for the branch thermal limits
+    based on the power variables or expressions.
+    """
+    m = model
+    con_set = decl.declare_set('_con_ineq_pq_branch_thermal_bounds',
+                               model=model, index_set=index_set)
+
+    m.ineq_branch_thermal_bounds = pe.Constraint(con_set)
+
+    if thermal_limits is None:
+        return
+
+    PTDF = m._PTDF
+    pld = PTDF.get_loss_distribution
+    qld = PTDF.get_qloss_distribution
+
+    for bn in index_set:
+        branch = branches[bn]
+        thermal_limit = thermal_limits
+        if thermal_limit is not None:
+            add_constr_branch_thermal_limit(m, branch, bn, thermal_limit, pfl_of_ploss=pld[bn], qfl_of_qloss=qld[bn])
+
+
+def add_constr_branch_thermal_limit(model, branch, branch_name, thermal_limit, pfl_of_ploss=0, qfl_of_qloss=0):
+    """
+    Create the inequality constraints for the branch thermal limits
+    based on the power variables for the fdf model.
+    """
+
+    m = model
+    bn = branch_name
+    m_pf = m.pf[bn]
+    m_qf = m.qf[bn]
+    vars_list = [m_pf, m_qf]
+
+    _pf = branch['pf']
+    _qf = branch['qf']
+    _pt = branch['pt']
+    _qt = branch['qt']
+    _st2 = _pt**2 + _qt**2
+    _sf2 = _pf**2 + _qf**2
+
+    if _sf2 > _st2:
+        direction = 1
+        pflow = _pf
+        qflow = _qf
+    else:
+        direction = -1
+        pflow = _pt
+        qflow = _qt
+
+    coef_list = [2*pflow, 2*qflow]
+    vars_list = [m_pf, m_qf]
+
+    if hasattr(m,'pfl'):
+        coef_list.append(pflow * direction)
+        vars_list.append(m.pfl[bn])
+    if hasattr(m,'qfl'):
+        coef_list.append(qflow * direction)
+        vars_list.append(m.qfl[bn])
+    if hasattr(m,'ploss') and pfl_of_ploss != 0:
+        coef_list.append(pflow * direction * pfl_of_ploss)
+        vars_list.append(m.ploss)
+    if hasattr(m,'qloss') and qfl_of_qloss != 0:
+        coef_list.append(qflow * direction * qfl_of_qloss)
+        vars_list.append(m.qloss)
+
+    expr = LinearExpression(constant=0, linear_coefs=coef_list, linear_vars=vars_list)
+    model.ineq_branch_thermal_limit[bn] = (None, expr, thermal_limit ** 2 + pflow ** 2 + qflow ** 2)
+
 
 def declare_ineq_p_contingency_branch_thermal_bounds(model, index_set,
                                                      pc_thermal_limits,

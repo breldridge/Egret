@@ -17,6 +17,7 @@ import pyomo.environ as pyo
 import numpy as np
 import copy as cp
 import math
+import egret.data.ptdf_utils as ptdf_utils
 
 from enum import Enum
 
@@ -337,12 +338,23 @@ def check_violations(mb, md, PTDF, max_viol_add, time=None, prepend_str=""):
     ## PFV -- power flow vector
     ## PFV_I -- interface power flow vector
     ## VA -- bus voltage angle vector
-    PFV, PFV_I, VA = PTDF.calculate_masked_PFV(mb)
+    if isinstance(PTDF, ptdf_utils.VirtualFDFpqMatrix):
+        PFV, PFV_I, VA = PTDF.calculate_masked_PFV(mb)
+        QFV, VM, = PTDF.calculate_QFV(mb)
+        _len_P = len(PFV)
+        assert _len_P == len(QFV)
+        SF = np.sqrt(PFV**2 + QFV**2)
+        #SF = np.fromiter((math.sqrt(PFV[i]**2 + QFV[i]**2) for i in range(_len_P)), float, count=_len_P)
+        flow_expr = mb.sf
+    else:
+        PFV, PFV_I, VA = PTDF.calculate_masked_PFV(mb)
+        SF = PFV
+        flow_expr = mb.pf
 
     violations_store = _MaximalViolationsStore(max_viol_add=max_viol_add, md=md, time=time, prepend_str=prepend_str)
 
     if len(PTDF.branches_keys_masked) > 0:
-        violations_store.check_and_add_violations('branch', PFV, mb.pf,
+        violations_store.check_and_add_violations('branch', SF, flow_expr,
                                             PTDF.lazy_branch_limits, PTDF.enforced_branch_limits,
                                            -PTDF.lazy_branch_limits, -PTDF.enforced_branch_limits,
                                             mb._idx_monitored, PTDF.branches_keys_masked)
@@ -398,6 +410,78 @@ def check_violations(mb, md, PTDF, max_viol_add, time=None, prepend_str=""):
     flows = _CalculatedFlows(PFV=PFV, PFV_I=PFV_I)
 
     return flows, violations_store.total_violations, violations_store.monitored_violations, viol_lazy
+
+def check_vm_violations(mb, md, PTDF, max_viol_add, time=None, prepend_str=""):
+
+    if time is None:  # DCOPF
+        active_slack_tol = mb._ptdf_options['active_flow_tol']
+    else:  # Unit Commitment
+        active_slack_tol = mb.parent_block()._ptdf_options['active_flow_tol']
+
+    ## PFV -- power flow vector
+    ## PFV_I -- interface power flow vector
+    ## VA -- bus voltage angle vector
+    QFV, VM = PTDF.calculate_QFV(mb)
+
+    violations_store = _MaximalViolationsStore(max_viol_add=max_viol_add, md=md, time=time, prepend_str=prepend_str)
+
+    if len(PTDF.branches_keys_masked) > 0:
+        violations_store.check_and_add_violations('branch', PFV, mb.pf,
+                                                  PTDF.lazy_branch_limits, PTDF.enforced_branch_limits,
+                                                  -PTDF.lazy_branch_limits, -PTDF.enforced_branch_limits,
+                                                  mb._idx_monitored, PTDF.branches_keys_masked)
+
+    if len(PTDF.interface_keys) > 0:
+        violations_store.check_and_add_violations('interface', PFV_I, mb.pfi,
+                                                  PTDF.lazy_interface_max_limits, PTDF.enforced_interface_max_limits,
+                                                  PTDF.lazy_interface_min_limits, PTDF.enforced_interface_min_limits,
+                                                  mb._interfaces_monitored, PTDF.interface_keys)
+
+    if PTDF.contingencies and \
+            violations_store.total_violations == 0:
+        ## NOTE: checking contingency constraints in general could be very expensive
+        ##       we probably want to delay doing so until we have a nearly transmission feasible
+        ##       solution
+
+        ## For each contingency, we'll only calculate the difference in flow,
+        ## and check this against the difference in bounds, i.e.,
+
+        ## power_flow_contingency == PFV + PFV_delta_c
+        ## -rate_c <= power_flow_contingency <= +rate_c
+        ## <===>
+        ## -rate_c - PFV <= PFV_delta_c <= +rate_c - PFV
+        ## <===>
+        ## contingency_limits_lower <= PFV_delta_c <= contingency_limits_upper
+        ## and
+        ## contingency_limits_lower == -rate_c - PFV; contingency_limits_upper == rate_c - PFV
+
+        ## In this way, we avoid (number of contingenies) adds PFV+PFV_delta_c
+
+        logger.debug("Checking contingency flows...")
+        lazy_contingency_limits_upper = PTDF.lazy_contingency_limits - PFV
+        lazy_contingency_limits_lower = -PTDF.lazy_contingency_limits - PFV
+        enforced_contingency_limits_upper = PTDF.enforced_contingency_limits - PFV
+        enforced_contingency_limits_lower = -PTDF.enforced_contingency_limits - PFV
+        for cn in PTDF.contingency_compensators:
+            PFV_delta = PTDF.calculate_masked_PFV_delta(cn, PFV, VA)
+            violations_store.check_and_add_violations('contingency', PFV_delta, mb.pfc,
+                                                      lazy_contingency_limits_upper, enforced_contingency_limits_upper,
+                                                      lazy_contingency_limits_lower, enforced_contingency_limits_lower,
+                                                      mb._contingencies_monitored, PTDF.branches_keys_masked,
+                                                      outer_name=cn, PFV=PFV)
+
+    logger.debug(f"branches_monitored: {mb._idx_monitored}\n"
+                 f"interfaces_monitored: {mb._interfaces_monitored}\n"
+                 f"contingencies_monitored: {mb._contingencies_monitored}\n"
+                 f"Violations being added: {violations_store.violations_store}\n"
+                 f"Violations in model: {violations_store.monitored_violations}\n")
+
+    viol_lazy = _LazyViolations(branch_lazy_violations=set(violations_store.get_violations_named('branch')),
+                                interface_lazy_violations=set(violations_store.get_violations_named('interface')),
+                                contingency_lazy_violations=set(violations_store.get_violations_named('contingency')))
+    flows = _CalculatedFlows(PFV=PFV, PFV_I=PFV_I)
+
+
 
 def _generate_flow_monitor_remove_message(flow_type, bn, slack, baseMVA, time):
     ret_str = "removing {0} {1} from monitored set".format(flow_type, bn)
@@ -718,7 +802,7 @@ def add_initial_monitored_branches(mb, branches, branches_in_service, ptdf_optio
     rel_ptdf_tol = ptdf_options['rel_ptdf_tol']
     abs_ptdf_tol = ptdf_options['abs_ptdf_tol']
 
-    constr = mb.ineq_pf_branch_thermal_bounds
+    constr = mb.ineq_branch_thermal_bounds
     viol_in_mb = mb._idx_monitored
     for i, bn in _iter_over_initial_set(branches, branches_in_service, PTDF):
         thermal_limit = PTDF.branch_limits_array_masked[i]

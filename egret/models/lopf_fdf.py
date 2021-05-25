@@ -31,6 +31,35 @@ from egret.common.log import logger
 from math import pi, radians
 
 
+def _include_pq_feasibility_slack(model, bus_names, bus_p_loads, bus_q_loads, gens_by_bus, gen_attrs,
+                                  p_marginal_slack_penalty, q_marginal_slack_penalty):
+    import egret.model_library.decl as decl
+    slack_init = 0
+    p_load_shed_bounds = sum(tx_utils.load_shed_limit(bus_p_loads[k], gens_by_bus[k], gen_attrs['p_min']) for k in bus_names)
+    q_load_shed_bounds = sum(tx_utils.load_shed_limit(bus_q_loads[k], gens_by_bus[k], gen_attrs['q_min']) for k in bus_names)
+    decl.declare_var('p_load_shed', model=model, index_set=None,
+                     initialize=0, bounds=(0,p_load_shed_bounds)
+                     )
+    decl.declare_var('q_load_shed', model=model, index_set=None,
+                     initialize=0, bounds=(0,q_load_shed_bounds)
+                     )
+    p_over_gen_bounds = sum(tx_utils.over_gen_limit(bus_p_loads[k], gens_by_bus[k], gen_attrs['p_max']) for k in bus_names)
+    q_over_gen_bounds = sum(tx_utils.over_gen_limit(bus_q_loads[k], gens_by_bus[k], gen_attrs['q_max']) for k in bus_names)
+    decl.declare_var('p_over_generation', model=model, index_set=None,
+                     initialize=0, bounds=(0,p_over_gen_bounds)
+                     )
+    decl.declare_var('q_over_generation', model=model, index_set=None,
+                     initialize=0, bounds=(0,q_over_gen_bounds)
+                     )
+    p_rhs_kwargs = {'include_feasibility_load_shed':'p_load_shed', 'include_feasibility_over_generation':'p_over_generation'}
+    q_rhs_kwargs = {'include_reactive_load_shed':'q_load_shed', 'include_reactive_over_generation':'q_over_generation'}
+
+    p_penalty = p_marginal_slack_penalty * (model.p_load_shed + model.p_over_generation)
+    q_penalty = q_marginal_slack_penalty * (model.q_load_shed + model.q_over_generation)
+    penalty_expr = p_penalty + q_penalty
+
+    return p_rhs_kwargs, q_rhs_kwargs, penalty_expr
+
 def _include_feasibility_slack(model, bus_names, bus_p_loads, gens_by_bus, gen_attrs, p_marginal_slack_penalty):
     import egret.model_library.decl as decl
 
@@ -209,16 +238,211 @@ def create_dense_lopf_model(model_data, include_feasibility_slack=False, base_po
     #TODO: Add D-LOPF model formulation
     pass
 
-def create_compact_lopf_model(model_data, include_feasibility_slack=False, base_point=BasePointType.FLATSTART, ptdf_options=None):
-    #TODO: Add C-LOPF model formulation
-    pass
+def create_compact_lopf_model(model_data, include_feasibility_slack=True, base_point=BasePointType.SOLUTION, ptdf_options=None):
+
+    ptdf_options = lpu.populate_default_ptdf_options(ptdf_options)
+
+    baseMVA = model_data.data['system']['baseMVA']
+    model_data.data['system']['load_mismatch_cost'] = 1000
+    lpu.check_and_scale_ptdf_options(ptdf_options, baseMVA)
+
+    md = model_data.clone_in_service()
+    tx_utils.scale_ModelData_to_pu(md, inplace=True)
+
+    gens = dict(md.elements(element_type='generator'))
+    buses = dict(md.elements(element_type='bus'))
+    branches = dict(md.elements(element_type='branch'))
+    loads = dict(md.elements(element_type='load'))
+    shunts = dict(md.elements(element_type='shunt'))
+
+    dc_branches = dict(md.elements(element_type='dc_branch'))
+
+    gen_attrs = md.attributes(element_type='generator')
+    bus_attrs = md.attributes(element_type='bus')
+    ## to keep things in order
+    buses_idx = tuple(buses.keys())
+    branches_idx = tuple(branches.keys())
+
+    inlet_branches_by_bus, outlet_branches_by_bus = \
+        tx_utils.inlet_outlet_branches_by_bus(branches, buses)
+    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+
+    model = pe.ConcreteModel()
+
+    ### declare (and fix) the loads at the buses
+    bus_p_loads, bus_q_loads = tx_utils.dict_of_bus_loads(buses, loads)
+
+    libbus.declare_var_pl(model, buses_idx, initialize=bus_p_loads)
+    libbus.declare_var_ql(model, buses_idx, initialize=bus_q_loads)
+    model.pl.fix()
+    model.ql.fix()
+
+    ### declare the fixed shunts at the buses
+    bus_bs_fixed_shunts, bus_gs_fixed_shunts = tx_utils.dict_of_bus_fixed_shunts(buses, shunts)
+
+    ### declare the generator real and reactive power
+    pg_init = {k: gen_attrs['pg'][k] for k in gens.keys()}
+    qg_init = {k: gen_attrs['qg'][k] for k in gens.keys()}
+    libgen.declare_var_pg(model, gen_attrs['names'], initialize=gen_attrs['pg'],
+                          bounds=zip_items(gen_attrs['p_min'], gen_attrs['p_max'])
+                          )
+    libgen.declare_var_qg(model, gen_attrs['names'], initialize=gen_attrs['qg'],
+                          bounds=zip_items(gen_attrs['q_min'], gen_attrs['q_max'])
+                          )
+    libbus.declare_var_vm(model, bus_attrs['names'], initialize=bus_attrs['vm'],
+                          bounds=zip_items(bus_attrs['v_min'], bus_attrs['v_max']))
+    model.pg.fix()
+    model.qg.fix()
+    model.vm.fix()
+
+    ### declare system real power line losses
+    libbranch.declare_var_ploss(model=model)
+    libbranch.declare_var_qloss(model=model)
+
+    ### include the feasibility slack for the system balance and other formulation settings
+    #TODO: add reactive kwargs
+    p_rhs_kwargs = {}
+    q_rhs_kwargs = {}
+    if include_feasibility_slack:
+        p_penalty = _validate_and_extract_slack_penalty(md)
+        q_penalty = _validate_and_extract_slack_penalty(md)
+        p_rhs_kwargs, q_rhs_kwargs, penalty_expr = _include_pq_feasibility_slack(model, bus_attrs['names'], bus_p_loads, bus_q_loads,
+                                                                                 gens_by_bus, gen_attrs, p_penalty, q_penalty)
+    p_rhs_kwargs['include_system_losses'] = True
+    p_rhs_kwargs['linearize_shunts'] = True
+    q_rhs_kwargs['include_system_losses'] = True
+    q_rhs_kwargs['linearize_shunts'] = True
+
+    if dc_branches:
+        dcpf_bounds = dict()
+        for k, k_dict in dc_branches.items():
+            kp_max = k_dict['rating_long_term']
+            if kp_max is None:
+                dcpf_bounds[k] = (None, None)
+            else:
+                dcpf_bounds[k] = (-kp_max, kp_max)
+        libbranch.declare_var_dcpf(model=model,
+                                   index_set=dc_branches.keys(),
+                                   initialize=0.,
+                                   bounds=dcpf_bounds,
+                                   )
+        dc_inlet_branches_by_bus, dc_outlet_branches_by_bus = \
+            tx_utils.inlet_outlet_branches_by_bus(dc_branches, buses)
+    else:
+        dc_inlet_branches_by_bus = None
+        dc_outlet_branches_by_bus = None
+
+    ### declare the power balance
+    libbus.declare_eq_p_balance_lopf(model=model,
+                                     index_set=buses_idx,
+                                     bus_p_loads=bus_p_loads,
+                                     gens_by_bus=gens_by_bus,
+                                     bus_gs_fixed_shunts=bus_gs_fixed_shunts,
+                                     vm_by_bus=bus_attrs['vm'],
+                                     **p_rhs_kwargs
+                                     )
+
+    ### declare net withdraw expression for use in PTDF power flows
+    libbus.declare_expr_p_net_withdraw_at_bus(model=model,
+                                              index_set=buses_idx,
+                                              bus_p_loads=bus_p_loads,
+                                              gens_by_bus=gens_by_bus,
+                                              bus_gs_fixed_shunts=bus_gs_fixed_shunts,
+                                              dc_inlet_branches_by_bus=dc_inlet_branches_by_bus,
+                                              dc_outlet_branches_by_bus=dc_outlet_branches_by_bus,
+                                              vm_by_bus=bus_attrs['vm'],
+                                              **p_rhs_kwargs
+                                              )
+    libbus.declare_expr_q_net_withdraw_at_bus(model=model,
+                                              index_set=buses_idx,
+                                              bus_q_loads=bus_q_loads,
+                                              gens_by_bus=gens_by_bus,
+                                              bus_bs_fixed_shunts=bus_bs_fixed_shunts,
+                                              vm_by_bus=bus_attrs['vm'],
+                                              **q_rhs_kwargs
+                                              )
+
+    ### add "blank" power flow expressions
+    libbranch.declare_expr_pf(model=model, index_set=branches_idx)
+    libbranch.declare_expr_qf(model=model, index_set=branches_idx)
+    libbranch.declare_expr_sf(model=model, index_set=branches_idx)
+
+    ## Do and store PTDF calculation
+    reference_bus = md.data['system']['reference_bus']
+
+    # ptdfobject
+    PTDF = ptdf_utils.VirtualFDFpqMatrix(branches, buses, reference_bus, base_point, ptdf_options,
+                                         branches_keys=branches_idx, buses_keys=buses_idx)
+
+    model._PTDF = PTDF
+    model._ptdf_options = ptdf_options
+
+    ## Ploss constraints
+    libbus.declare_eq_ploss_ptdf_approx(model=model,
+                                        PTDF=PTDF,
+                                        abs_ptdf_tol=ptdf_options['abs_ptdf_tol'],
+                                        rel_ptdf_tol=ptdf_options['rel_ptdf_tol'],
+                                        )
+    libbus.declare_eq_qloss_ptdf_approx(model=model,
+                                        PTDF=PTDF,
+                                        abs_ptdf_tol=ptdf_options['abs_ptdf_tol'],
+                                        rel_ptdf_tol=ptdf_options['rel_ptdf_tol'],
+                                        )
+
+    if ptdf_options['lazy']:
+
+        ### add "blank" thermal limits
+        libbranch.declare_ineq_pq_branch_thermal_bounds(model=model,
+                                                        index_set=branches_idx,
+                                                        branches=branches,
+                                                        thermal_limits=None,
+                                                        )
+
+        ### add helpers for tracking monitored branches
+        lpu.add_monitored_flow_tracker(model)
+
+        ### add initial branches to monitored set
+        lpu.add_initial_monitored_branches(model, branches, branches_idx, ptdf_options, PTDF)
+
+    else:
+        thermal_limits = {k: branches[k]['rating_long_term'] for k in branches.keys()}
+        ## add all the constraints
+        ### declare the branch power flow approximation constraints
+        libbranch.declare_eq_branch_power_ptdf_approx(model=model,
+                                                      index_set=branches_idx,
+                                                      PTDF=PTDF,
+                                                      abs_ptdf_tol=ptdf_options['abs_ptdf_tol'],
+                                                      rel_ptdf_tol=ptdf_options['rel_ptdf_tol'],
+                                                      )
+        libbranch.declare_eq_branch_power_qtdf_approx(model=model,
+                                                      index_set=branches_idx,
+                                                      PTDF=PTDF,
+                                                      abs_ptdf_tol=ptdf_options['abs_ptdf_tol'],
+                                                      rel_ptdf_tol=ptdf_options['rel_ptdf_tol'],
+                                                      )
+
+        ### add all the limits
+        libbranch.declare_ineq_pq_branch_thermal_bounds(model=model,
+                                                        index_set=branches_idx,
+                                                        branches=branches,
+                                                        thermal_limits=thermal_limits,
+                                                        )
+
+    ### declare the generator cost objective
+    libgen.declare_expression_pgqg_operating_cost(model=model,
+                                                  index_set=gen_attrs['names'],
+                                                  p_costs=gen_attrs['p_cost']
+                                                  )
+
+    obj_expr = sum(model.pg_operating_cost[gen_name] for gen_name in model.pg_operating_cost)
+    if include_feasibility_slack:
+        obj_expr += penalty_expr
+
+    model.obj = pe.Objective(expr=obj_expr)
+
+    return model, md
 
 def create_p_lopf_model(model_data, include_feasibility_slack=False, base_point=BasePointType.SOLUTION, ptdf_options=None):
-    #TODO: change to P-LOPF model formulation
-    # - might only need to change base_point and a few other things? ( will need to check and validate)
-    # - (done) add ploss variable/constraint
-    # - include ploss in transmission limit constraints
-    # - adjust tranmission limits for SOLUTION reactive flow
 
     ptdf_options = lpu.populate_default_ptdf_options(ptdf_options)
 
@@ -228,7 +452,6 @@ def create_p_lopf_model(model_data, include_feasibility_slack=False, base_point=
     
     md = model_data.clone_in_service()
     tx_utils.scale_ModelData_to_pu(md, inplace = True)
-
 
     gens = dict(md.elements(element_type='generator'))
     buses = dict(md.elements(element_type='bus'))
@@ -275,9 +498,10 @@ def create_p_lopf_model(model_data, include_feasibility_slack=False, base_point=
     p_rhs_kwargs = {}
     if include_feasibility_slack:
         p_marginal_slack_penalty = _validate_and_extract_slack_penalty(md)                
-        p_rhs_kwargs, penalty_expr = _include_system_feasibility_slack(model, bus_p_loads, gen_attrs, p_marginal_slack_penalty)
+        p_rhs_kwargs, penalty_expr = _include_feasibility_slack(model, bus_attrs['names'], bus_p_loads,
+                                                                gens_by_bus, gen_attrs, p_marginal_slack_penalty)
     p_rhs_kwargs['include_system_losses'] = True
-    p_rhs_kwargs['linearize_shunts'] = False #TODO: should be set to TRUE for S/D/C-LOPF models
+    p_rhs_kwargs['linearize_shunts'] = False
 
     if dc_branches:
         dcpf_bounds = dict()
@@ -356,14 +580,12 @@ def create_p_lopf_model(model_data, include_feasibility_slack=False, base_point=
         lpu.add_monitored_flow_tracker(model)
 
         ### add initial branches to monitored set
-        #TODO: it looks like this doesnt add any inital constraints?
         lpu.add_initial_monitored_branches(model, branches, branches_idx, ptdf_options, PTDF)
 
     else:
         p_max = {k: branches[k]['rating_long_term'] - PTDF._q_correction[k] for k in branches.keys()}
         ## add all the constraints
         ### declare the branch power flow approximation constraints
-        #TODO: include losses in the equation
         libbranch.declare_eq_branch_power_ptdf_approx(model=model,
                                                       index_set=branches_idx,
                                                       PTDF=PTDF,
@@ -372,7 +594,6 @@ def create_p_lopf_model(model_data, include_feasibility_slack=False, base_point=
                                                       )
 
         ### add all the limits
-        #TODO: adjust limits for base point Q flows
         libbranch.declare_ineq_p_branch_thermal_lbub(model=model,
                                                      index_set=branches_idx,
                                                      branches=branches,
@@ -395,9 +616,9 @@ def create_p_lopf_model(model_data, include_feasibility_slack=False, base_point=
 
     return model, md
 
-def _lazy_ptdf_dcopf_model_solve_loop(m, md, solver, solver_tee=True, symbolic_solver_labels=False, iteration_limit=100000):
+def _lazy_ptdf_lopf_model_solve_loop(m, md, solver, solver_tee=True, symbolic_solver_labels=False, iteration_limit=100000):
     '''
-    The lazy PTDF DCOPF solver loop. This function iteratively
+    The lazy PTDF LOPF solver loop. This function iteratively
     adds violated transmission constraints until either the result is
     transmission feasible or we're tracking every violated constraint
     in the model
@@ -437,6 +658,9 @@ def _lazy_ptdf_dcopf_model_solve_loop(m, md, solver, solver_tee=True, symbolic_s
 
         flows, viol_num, mon_viol_num, viol_lazy \
                 = lpu.check_violations(m, md, PTDF, ptdf_options['max_violations_per_iteration'])
+        if isinstance(PTDF, VirtualFDFpqMatrix):
+            vm, vm_viol_num, mon_vm_viol_num, vm_viol_lazy \
+                = lpu.check_vm_violations(m, md, PTDF, ptdf_options['max_violations_per_iteration'])
 
         iter_status_str = "iteration {0}, found {1} violation(s)".format(i,viol_num)
         if mon_viol_num:
@@ -527,9 +751,9 @@ def solve_lopf(model_data,
     m, results, solver = _solve_model(m,solver,timelimit=timelimit,solver_tee=solver_tee,
                               symbolic_solver_labels=symbolic_solver_labels,solver_options=options, return_solver=True)
 
-    if dcopf_model_generator == create_p_lopf_model and m._ptdf_options['lazy']:
+    if hasattr(m, '_ptdf_options') and m._ptdf_options['lazy']:
         iter_limit = m._ptdf_options['iteration_limit']
-        term_cond = _lazy_ptdf_dcopf_model_solve_loop(m, md, solver, solver_tee=solver_tee, symbolic_solver_labels=symbolic_solver_labels,iteration_limit=iter_limit)
+        term_cond = _lazy_ptdf_lopf_model_solve_loop(m, md, solver, solver_tee=solver_tee, symbolic_solver_labels=symbolic_solver_labels,iteration_limit=iter_limit)
 
     # save results data to ModelData object
     gens = dict(md.elements(element_type='generator'))
@@ -545,17 +769,29 @@ def solve_lopf(model_data,
 
     ## calculate the power flows from our PTDF matrix for maximum precision
     ## calculate the LMPC (LMP congestion) using numpy
-    if dcopf_model_generator == create_p_lopf_model:
-        PTDF = m._PTDF
-
-        PFV, _, VA = PTDF.calculate_PFV(m)
-
-        branches_idx = PTDF.branches_keys
-        for i,bn in enumerate(branches_idx):
-            branches[bn]['pf'] = PFV[i]
-    else:
+    if dcopf_model_generator == create_sparse_lopf_model:
         for k, k_dict in branches.items():
             k_dict['pf'] = value(m.pf[k])
+            k_dict['qf'] = value(m.qf[k])
+        for b, b_dict in buses.items():
+            b_dict['va'] = value(m.va[b])
+            b_dict['vm'] = value(m.vm[b])
+    else:
+        PTDF = m._PTDF
+        PFV, _, VA = PTDF.calculate_PFV(m)
+        branches_idx = PTDF.branches_keys
+        buses_idx = PTDF.buses_keys
+        for i,bn in enumerate(branches_idx):
+            branches[bn]['pf'] = PFV[i]
+        for i,b in enumerate(buses_idx):
+            buses[b]['va'] = VA[i]
+
+        if isinstance(PTDF, ptdf_utils.VirtualFDFpqMatrix):
+            QFV, VM = PTDF.calculate_QFV(m)
+            for i,bn in enumerate(branches_idx):
+                branches[bn]['qf'] = QFV[i]
+            for i,b in enumerate(buses_idx):
+                buses[b]['vm'] = VM[i]
 
     if dcopf_model_generator == create_p_lopf_model:
         if hasattr(m, 'p_load_shed'):
@@ -659,13 +895,13 @@ if __name__ == '__main__':
     print(path)
     #filename = 'pglib_opf_case5_pjm.m'
     #filename = 'pglib_opf_case1888_rte.m'
-    filename = case_names[20] + '.m'
+    filename = case_names[10] + '.m'
     test_case = os.path.join(path, '../thirdparty/pglib-opf-master/', filename)
     model_data = create_ModelData(test_case)
     print(filename)
 
-    dcopf_model = create_p_lopf_model
-    #dcopf_model = create_c_lopf_model
+    #dcopf_model = create_p_lopf_model
+    dcopf_model = create_compact_lopf_model
     #dcopf_model = create_d_lopf_model
     #dcopf_model = create_s_lopf_model
 

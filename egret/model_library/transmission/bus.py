@@ -217,7 +217,43 @@ def declare_eq_p_net_withdraw_at_bus(model, index_set, bus_p_loads, gens_by_bus,
                                                     - sum(m.dcpf[branch_name] for branch_name
                                                            in dc_inlet_branches_by_bus[b])
                                                     )
-                    
+
+def declare_expr_q_net_withdraw_at_bus(model, index_set, bus_q_loads, gens_by_bus, bus_bs_fixed_shunts,
+                                       dc_inlet_branches_by_bus=None, dc_outlet_branches_by_bus=None,
+                                       vm_by_bus=None, **kwargs):
+    """
+    Create a named pyomo expression for bus net withdraw
+    """
+    m = model
+    decl.declare_expr('q_nw', model, index_set)
+
+    if kwargs and vm_by_bus is not None:
+        for idx,val in kwargs.items():
+            if idx=='linearize_shunts' and val==True:
+                for b in index_set:
+                    m.q_nw[b] = (-bus_bs_fixed_shunts[b] * (2 * vm_by_bus[b] * m.vm[b] - vm_by_bus[b] ** 2)
+                                + (m.ql[b] if bus_q_loads[b] != 0.0 else 0.0)
+                                - sum(m.qg[g] for g in gens_by_bus[b])
+                                 )
+                return
+            if idx=='linearize_shunts' and val==False:
+                for b in index_set:
+                    m.q_nw[b] = (-bus_bs_fixed_shunts[b] * vm_by_bus[b] ** 2
+                                + (m.ql[b] if bus_q_loads[b] != 0.0 else 0.0)
+                                - sum(m.qg[g] for g in gens_by_bus[b])
+                                #+ sum(m.dcpf[branch_name] for branch_name in dc_outlet_branches_by_bus[b])
+                                #- sum(m.dcpf[branch_name] for branch_name in dc_inlet_branches_by_bus[b])
+                                )
+                return
+
+    for b in index_set:
+        m.q_nw[b] = (-bus_bs_fixed_shunts[b]
+                    + ( m.ql[b] if bus_q_loads[b] != 0.0 else 0.0 )
+                    - sum( m.qg[g] for g in gens_by_bus[b] )
+                    #+ sum(m.dcpf[branch_name] for branch_name in dc_outlet_branches_by_bus[b])
+                    #- sum(m.dcpf[branch_name] for branch_name in dc_inlet_branches_by_bus[b])
+                    )
+
 def declare_eq_ref_bus_nonzero(model, ref_angle, ref_bus):
     """
     Create an equality constraint to enforce tan(\theta) = vj/vr at  the reference bus
@@ -308,7 +344,8 @@ def declare_eq_p_balance_lopf(model, index_set, bus_p_loads, gens_by_bus, bus_gs
                 p_expr += eval("m." + val)
             if idx == 'include_feasibility_over_generation':
                 p_expr -= eval("m." + val)
-            if idx == 'include_losses':
+            if idx == 'include_branch_losses':
+                #TODO: how will we implement hybrid losses?
                 p_expr -= sum(m.pfl[branch_name] for branch_name in val)
             if idx == 'include_system_losses':
                 p_expr -= m.ploss
@@ -329,6 +366,46 @@ def declare_eq_p_balance_lopf(model, index_set, bus_p_loads, gens_by_bus, bus_gs
     else:
         m.eq_p_balance = pe.Constraint(expr = p_expr == 0.0)
 
+def declare_eq_q_balance_lopf(model, index_set, bus_q_loads, gens_by_bus, bus_bs_fixed_shunts, vm_by_bus, **rhs_kwargs):
+    """
+    Create the equality constraints for the system-wide real power balance.
+
+    NOTE: Equation build orientates constants to the RHS in order to compute the correct dual variable sign
+    """
+    m = model
+
+    q_expr = sum(m.qg[gen_name] for bus_name in index_set for gen_name in gens_by_bus[bus_name])
+    q_expr -= sum(m.ql[bus_name] for bus_name in index_set if bus_q_loads[bus_name] is not None)
+
+    relaxed_balance = False
+
+    if rhs_kwargs:
+        for idx,val in rhs_kwargs.items():
+            if idx == 'include_reactive_load_shed':
+                q_expr += eval("m." + val)
+            if idx == 'include_reactive_over_generation':
+                q_expr -= eval("m." + val)
+            if idx == 'include_branch_losses':
+                #TODO: how will we implement hybrid losses?
+                q_expr -= sum(m.qfl[branch_name] for branch_name in val)
+            if idx == 'include_system_losses':
+                q_expr -= m.qloss
+            if idx == 'relax_balance':
+                relaxed_balance = True
+            if idx == 'linearize_shunts':
+                if val == True:
+                    q_expr -= sum( bus_bs_fixed_shunts[b] * (2 * vm_by_bus[b] * m.vm[b] - vm_by_bus[b] ** 2) \
+                        for b in index_set if bus_bs_fixed_shunts[b] != 0.0)
+                elif val == False:
+                    q_expr -= sum( bus_bs_fixed_shunts[b] * vm_by_bus[b] ** 2 \
+                        for b in index_set if bus_bs_fixed_shunts[b] != 0.0)
+                else:
+                    raise Exception('linearize_shunts option is invalid.')
+
+    if relaxed_balance:
+        m.eq_q_balance = pe.Constraint(expr = q_expr >= 0.0)
+    else:
+        m.eq_q_balance = pe.Constraint(expr = q_expr == 0.0)
 
 def declare_eq_ploss_ptdf_approx(model, PTDF, rel_ptdf_tol=None, abs_ptdf_tol=None):
     """
@@ -372,6 +449,47 @@ def declare_eq_ploss_ptdf_approx(model, PTDF, rel_ptdf_tol=None, abs_ptdf_tol=No
     else:
         m.ploss = expr
 
+def declare_eq_qloss_ptdf_approx(model, PTDF, rel_ptdf_tol=None, abs_ptdf_tol=None):
+    """
+    Create the equality constraint or expression for total real power losses (from PTDF approximation)
+    """
+
+    m = model
+
+    qloss_is_var = isinstance(m.qloss, pe.Var)
+    if qloss_is_var:
+        m.eq_qloss = pe.Constraint()
+    else:
+        if not isinstance(m.qloss, pe.Expression):
+            raise Exception("Unrecognized type for m.qloss", m.qloss.pprint())
+
+    if rel_ptdf_tol is None:
+        rel_ptdf_tol = 0.
+    if abs_ptdf_tol is None:
+        abs_ptdf_tol = 0.
+
+    const = PTDF.get_qlossoffset()
+    max_coef = PTDF.get_qlossfactor_abs_max()
+    ptdf_tol = max(abs_ptdf_tol, rel_ptdf_tol*max_coef)
+    m_q_nw = m.q_nw
+    ## if model.q_nw is Var, we can use LinearExpression
+    ## to build these dense constraints much faster
+    coef_list = []
+    var_list = []
+    for bus_name, coef in PTDF.get_qlossfactor_iterator():
+        if abs(coef) >= ptdf_tol:
+            coef_list.append(coef)
+            var_list.append(m_q_nw[bus_name])
+
+    if isinstance(m_q_nw, pe.Var):
+        expr = LinearExpression(linear_vars=var_list, linear_coefs=coef_list, constant=const)
+    else:
+        expr = quicksum( (coef*var for coef, var in zip(coef_list, var_list)), start=const, linear=True)
+
+    if qloss_is_var:
+        m.eq_qloss = m.qloss == expr
+    else:
+        m.qloss = expr
 
 def declare_eq_p_balance_dc_approx(model, index_set,
                                    bus_p_loads,

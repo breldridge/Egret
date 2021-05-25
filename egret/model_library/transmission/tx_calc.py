@@ -483,7 +483,7 @@ def _calculate_H_matrix_qflow(branches,buses,index_set_branch,index_set_bus,mapp
             col.append(idx_col)
             data.append(val)
 
-    H = sp.sparse.coo_matrix( (data, (row,col)), shape=(_len_branch, _len_bus))
+    H = sp.coo_matrix( (data, (row,col)), shape=(_len_branch, _len_bus))
     return H.tocsr()
 
 
@@ -538,7 +538,7 @@ def _calculate_K_matrix_qloss(branches,buses,index_set_branch,index_set_bus,mapp
             col.append(idx_col)
             data.append(val)
 
-    K = sp.sparse.coo_matrix((data,(row,col)),shape=(_len_branch,_len_bus))
+    K = sp.coo_matrix((data,(row,col)),shape=(_len_branch,_len_bus))
     return K.tocsr()
 
 
@@ -789,9 +789,9 @@ def _calculate_H0_const_qflow(branches,buses,index_set_branch,base_point=BasePoi
         if branch['branch_type'] == 'transformer':
             tau = branch['transformer_tap_ratio']
             shift = -math.radians(branch['transformer_phase_shift'])
-        g = calculate_conductance(branch)/tau
-        b = calculate_susceptance(branch)/tau**2
-        bc = branch['charging_susceptance']/tau**2
+        g = calculate_conductance(branch)
+        b = calculate_susceptance(branch)
+        bc = branch['charging_susceptance']
 
         if base_point == BasePointType.FLATSTART:
             vn = 1.
@@ -804,8 +804,8 @@ def _calculate_H0_const_qflow(branches,buses,index_set_branch,base_point=BasePoi
             tn = buses[from_bus]['va']
             tm = buses[to_bus]['va']
 
-        H0_const[idx_row] = 0.5 * (b+bc/2) * (vn**2 - vm**2) \
-                               + g * vn * vm * sin(tn - tm + shift)
+        H0_const[idx_row] = 0.5 * (b+bc/2) * (vn**2/tau**2 - vm**2) \
+                               + g * vn * vm * sin(tn - tm + shift)/tau
 
     return H0_const
 
@@ -833,7 +833,7 @@ def _calculate_K0_const_qloss(branches,buses,index_set_branch,base_point=BasePoi
             shift = -math.radians(branch['transformer_phase_shift'])
         b = calculate_susceptance(branch)
         bc = branch['charging_susceptance']
-        bb = (b + bc)/tau**2
+        bb = (b + bc/2)
 
         if base_point == BasePointType.FLATSTART:
             vn = 1.
@@ -846,8 +846,8 @@ def _calculate_K0_const_qloss(branches,buses,index_set_branch,base_point=BasePoi
             tn = buses[from_bus]['va']
             tm = buses[to_bus]['va']
 
-        K0_const[idx_row] = bb * (vn**2 + vm**2) \
-                               - 2 * b * vn * vm * cos(tn - tm + shift)
+        K0_const[idx_row] = bb * ((vn/tau)**2 + vm**2) \
+                               - 2 * b * vn * vm * cos(tn - tm + shift) / tau
 
     return K0_const
 
@@ -1042,7 +1042,7 @@ def calculate_fdf_q_factorization(branches,buses,index_set_branch,index_set_bus,
         raise RuntimeError("Network is not connected, cannot use PTDF formulation")
 
     #(A^T)
-    At = calculate_adjacency_matrix_transpose(branches,index_set_branch,index_set_bus,mapping_bus_to_idx)
+    At = -calculate_adjacency_matrix_transpose(branches,index_set_branch,index_set_bus,mapping_bus_to_idx)
     AbAt = calculate_absolute_adjacency_matrix(At)
 
     Hm = _calculate_H_matrix_qflow(branches, buses, index_set_branch, index_set_bus, mapping_bus_to_idx, base_point=base_point)
@@ -1064,14 +1064,15 @@ def calculate_fdf_q_factorization(branches,buses,index_set_branch,index_set_bus,
 
     #TODO: do the interfaces need Q flows?
     if interfaces is None:
-        return MLU_MP, B_dA, G_dA
+        return MLU_MP, Hm, Km, M0, H0, K0
     else:
         if mapping_bus_to_idx is None:
             mapping_branch_to_idx = {branch_n: i for i, branch_n in enumerate(index_set_branch)}
         I = _calculate_interface_matrix(interfaces, index_set_interface, mapping_branch_to_idx)
-        B_dA_I = I@B_dA
+        Hm_I = I@Hm
 
-        return MLU_MP, B_dA, G_dA, B_dA_I, I
+        # note: H0 and K0 will be used to back-calculate q-flows and q-losses
+        return MLU_MP, Hm, Km, M0, H0, K0, Hm_I, I
 
 def calculate_loss_distribution_p(branches, buses):
     losses = {k:branch['pt'] + branch['pf'] for k,branch in branches.items()}
