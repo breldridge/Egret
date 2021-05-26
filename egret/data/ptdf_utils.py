@@ -1083,11 +1083,9 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
         VM = -self.QMLU.solve(NWV.A[0])
 
         # shape VM explicitly as a column vector
-        # (needed for some 0-dim arrays)
-        #        VA = self._insert_reference_bus(VA,0)
         VM.shape = (VM.shape[0], 1)
 
-        QFV = -np.asmatrix(self.QB_dA @ VM)
+        QFV = np.asmatrix(self.QB_dA @ VM)
         QFV += np.asmatrix(self.QB0).T
 
         ## make back to row-looking vectors
