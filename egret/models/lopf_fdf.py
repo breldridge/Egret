@@ -658,7 +658,7 @@ def _lazy_ptdf_lopf_model_solve_loop(m, md, solver, solver_tee=True, symbolic_so
 
         flows, viol_num, mon_viol_num, viol_lazy \
                 = lpu.check_violations(m, md, PTDF, ptdf_options['max_violations_per_iteration'])
-        if isinstance(PTDF, VirtualFDFpqMatrix):
+        if isinstance(PTDF, ptdf_utils.VirtualFDFpqMatrix):
             vm, vm_viol_num, mon_vm_viol_num, vm_viol_lazy \
                 = lpu.check_vm_violations(m, md, PTDF, ptdf_options['max_violations_per_iteration'])
 

@@ -131,10 +131,28 @@ class _LazyViolations(abc.Sized):
     def contingency_lazy_violations(self):
         return self._contingency_lazy_violations
 
+class _LazyVmViolations(abc.Sized):
+    def __init__(self, vm_lazy_violations):
+        self._vm_lazy_violations = vm_lazy_violations
+
+    def __len__(self):
+        return len(self._vm_lazy_violations)
+
+    @property
+    def vm_lazy_violations(self):
+        return self._vm_lazy_violations
+
 class _CalculatedFlows:
-    def __init__(self, PFV=None, PFV_I=None):
+    def __init__(self, PFV=None, PFV_I=None, QFV=None, VM=None, VA=None):
         self._PFV = PFV
         self._PFV_I = PFV_I
+        self._QFV = QFV
+        self._VM = VM
+        self._VA = VA
+        if PFV is not None and QFV is not None:
+            self._SFV = np.sqrt(PFV**2 + QFV**2)
+        else:
+            self._SFV = PFV
 
     @property
     def PFV(self):
@@ -142,6 +160,19 @@ class _CalculatedFlows:
     @property
     def PFV_I(self):
         return self._PFV_I
+    @property
+    def QFV(self):
+        return self._QFV
+    @property
+    def VM(self):
+        return self._VM
+    @property
+    def VA(self):
+        return self._VA
+    @property
+    def SFV(self):
+        return self._SFV
+
 
 class _MaximalViolationsStore:
     def __init__(self, max_viol_add, md, prepend_str, time=None):
@@ -327,6 +358,9 @@ def add_monitored_flow_tracker(mb):
     if not hasattr(mb, 'pfc_slack_pos'):
         mb.pfc_slack_pos = pyo.Var([], dense=False)
 
+def add_monitored_vm_tracker(mb):
+    mb._vm_monitored = list()
+
 ## violation checker
 def check_violations(mb, md, PTDF, max_viol_add, time=None, prepend_str=""):
 
@@ -335,26 +369,28 @@ def check_violations(mb, md, PTDF, max_viol_add, time=None, prepend_str=""):
     else: # Unit Commitment
         active_slack_tol = mb.parent_block()._ptdf_options['active_flow_tol']
 
+    pq_model = isinstance(PTDF, ptdf_utils.VirtualFDFpqMatrix)
+
     ## PFV -- power flow vector
     ## PFV_I -- interface power flow vector
     ## VA -- bus voltage angle vector
-    if isinstance(PTDF, ptdf_utils.VirtualFDFpqMatrix):
+    if pq_model:
         PFV, PFV_I, VA = PTDF.calculate_masked_PFV(mb)
-        QFV, VM, = PTDF.calculate_QFV(mb)
-        _len_P = len(PFV)
-        assert _len_P == len(QFV)
-        SF = np.sqrt(PFV**2 + QFV**2)
-        #SF = np.fromiter((math.sqrt(PFV[i]**2 + QFV[i]**2) for i in range(_len_P)), float, count=_len_P)
+        QFV, VM = PTDF.calculate_QFV(mb)
         flow_expr = mb.sf
+        vm_expr = mb.vm
     else:
         PFV, PFV_I, VA = PTDF.calculate_masked_PFV(mb)
-        SF = PFV
+        QFV = None
+        VM = None
         flow_expr = mb.pf
+
+    flows = _CalculatedFlows(PFV=PFV, PFV_I=PFV_I, QFV=QFV, VM=VM, VA=VA)
 
     violations_store = _MaximalViolationsStore(max_viol_add=max_viol_add, md=md, time=time, prepend_str=prepend_str)
 
     if len(PTDF.branches_keys_masked) > 0:
-        violations_store.check_and_add_violations('branch', SF, flow_expr,
+        violations_store.check_and_add_violations('branch', flows.SF, flow_expr,
                                             PTDF.lazy_branch_limits, PTDF.enforced_branch_limits,
                                            -PTDF.lazy_branch_limits, -PTDF.enforced_branch_limits,
                                             mb._idx_monitored, PTDF.branches_keys_masked)
@@ -407,12 +443,26 @@ def check_violations(mb, md, PTDF, max_viol_add, time=None, prepend_str=""):
     viol_lazy = _LazyViolations(branch_lazy_violations=set(violations_store.get_violations_named('branch')),
                                 interface_lazy_violations=set(violations_store.get_violations_named('interface')),
                                 contingency_lazy_violations=set(violations_store.get_violations_named('contingency')))
-    flows = _CalculatedFlows(PFV=PFV, PFV_I=PFV_I)
+
+    if pq_model:
+        vm_violations_store = _MaximalViolationsStore(max_viol_add=max_viol_add, md=md, time=time, prepend_str=prepend_str)
+        vm_violations_store.check_and_add_violations('voltage', VM, vm_expr,
+                                                     PTDF.lazy_vm_limits, PTDF.enforced_vm_limits,
+                                                     -PTDF.lazy_vm_limits, -PTDF.enforced_vm_limits,
+                                                     mb._vm_idx_monitored, PTDF.buses_keys)
+        logger.debug(f"buses_monitored: {mb._vm_monitored}\n"
+                     f"Voltage violations being added: {vm_violations_store.violations_store}\n"
+                     f"Voltage violations in model: {vm_violations_store.monitored_violations}\n")
+        vm_viol_lazy = _LazyVmViolations(vm_lazy_violations=set(vm_violations_store.get_violations_named('voltage')))
+
+        return flows, violations_store.total_violations, violations_store.monitored_violations, viol_lazy, \
+               vm_violations_store.total_violations, vm_violations_store.monitored_violations, vm_viol_lazy
 
     return flows, violations_store.total_violations, violations_store.monitored_violations, viol_lazy
 
-def check_vm_violations(mb, md, PTDF, max_viol_add, time=None, prepend_str=""):
 
+## violation checker
+def check_vm_violations(mb, md, PTDF, max_viol_add, time=None, prepend_str="", flows=None):
     if time is None:  # DCOPF
         active_slack_tol = mb._ptdf_options['active_flow_tol']
     else:  # Unit Commitment
@@ -421,67 +471,32 @@ def check_vm_violations(mb, md, PTDF, max_viol_add, time=None, prepend_str=""):
     ## PFV -- power flow vector
     ## PFV_I -- interface power flow vector
     ## VA -- bus voltage angle vector
-    QFV, VM = PTDF.calculate_QFV(mb)
+    if flows is None:
+        PFV, PFV_I, VA = PTDF.calculate_masked_PFV(mb)
+        QFV, VM = PTDF.calculate_QFV(mb)
+        flows = _CalculatedFlows(PFV=PFV, PFV_I=PFV_I, QFV=QFV, VM=VM, VA=VA)
 
-    violations_store = _MaximalViolationsStore(max_viol_add=max_viol_add, md=md, time=time, prepend_str=prepend_str)
+    flow_expr = mb.sf
+    vm_expr = mb.vm
 
-    if len(PTDF.branches_keys_masked) > 0:
-        violations_store.check_and_add_violations('branch', PFV, mb.pf,
-                                                  PTDF.lazy_branch_limits, PTDF.enforced_branch_limits,
-                                                  -PTDF.lazy_branch_limits, -PTDF.enforced_branch_limits,
-                                                  mb._idx_monitored, PTDF.branches_keys_masked)
-
-    if len(PTDF.interface_keys) > 0:
-        violations_store.check_and_add_violations('interface', PFV_I, mb.pfi,
-                                                  PTDF.lazy_interface_max_limits, PTDF.enforced_interface_max_limits,
-                                                  PTDF.lazy_interface_min_limits, PTDF.enforced_interface_min_limits,
-                                                  mb._interfaces_monitored, PTDF.interface_keys)
-
-    if PTDF.contingencies and \
-            violations_store.total_violations == 0:
-        ## NOTE: checking contingency constraints in general could be very expensive
-        ##       we probably want to delay doing so until we have a nearly transmission feasible
-        ##       solution
-
-        ## For each contingency, we'll only calculate the difference in flow,
-        ## and check this against the difference in bounds, i.e.,
-
-        ## power_flow_contingency == PFV + PFV_delta_c
-        ## -rate_c <= power_flow_contingency <= +rate_c
-        ## <===>
-        ## -rate_c - PFV <= PFV_delta_c <= +rate_c - PFV
-        ## <===>
-        ## contingency_limits_lower <= PFV_delta_c <= contingency_limits_upper
-        ## and
-        ## contingency_limits_lower == -rate_c - PFV; contingency_limits_upper == rate_c - PFV
-
-        ## In this way, we avoid (number of contingenies) adds PFV+PFV_delta_c
-
-        logger.debug("Checking contingency flows...")
-        lazy_contingency_limits_upper = PTDF.lazy_contingency_limits - PFV
-        lazy_contingency_limits_lower = -PTDF.lazy_contingency_limits - PFV
-        enforced_contingency_limits_upper = PTDF.enforced_contingency_limits - PFV
-        enforced_contingency_limits_lower = -PTDF.enforced_contingency_limits - PFV
-        for cn in PTDF.contingency_compensators:
-            PFV_delta = PTDF.calculate_masked_PFV_delta(cn, PFV, VA)
-            violations_store.check_and_add_violations('contingency', PFV_delta, mb.pfc,
-                                                      lazy_contingency_limits_upper, enforced_contingency_limits_upper,
-                                                      lazy_contingency_limits_lower, enforced_contingency_limits_lower,
-                                                      mb._contingencies_monitored, PTDF.branches_keys_masked,
-                                                      outer_name=cn, PFV=PFV)
-
-    logger.debug(f"branches_monitored: {mb._idx_monitored}\n"
-                 f"interfaces_monitored: {mb._interfaces_monitored}\n"
-                 f"contingencies_monitored: {mb._contingencies_monitored}\n"
-                 f"Violations being added: {violations_store.violations_store}\n"
-                 f"Violations in model: {violations_store.monitored_violations}\n")
+    vm_violations_store = _MaximalViolationsStore(max_viol_add=max_viol_add, md=md, time=time, prepend_str=prepend_str)
 
     viol_lazy = _LazyViolations(branch_lazy_violations=set(violations_store.get_violations_named('branch')),
                                 interface_lazy_violations=set(violations_store.get_violations_named('interface')),
                                 contingency_lazy_violations=set(violations_store.get_violations_named('contingency')))
-    flows = _CalculatedFlows(PFV=PFV, PFV_I=PFV_I)
 
+    vm_violations_store.check_and_add_violations('voltage', flows.VM, vm_expr,
+                                                 PTDF.lazy_vm_limits, PTDF.enforced_vm_limits,
+                                                 -PTDF.lazy_vm_limits, -PTDF.enforced_vm_limits,
+                                                 mb._vm_idx_monitored, PTDF.buses_keys)
 
+    logger.debug(f"buses_monitored: {mb._vm_monitored}\n"
+                 f"Voltage violations being added: {vm_violations_store.violations_store}\n"
+                 f"Voltage violations in model: {vm_violations_store.monitored_violations}\n")
+
+    vm_viol_lazy = _LazyVmViolations(vm_lazy_violations=set(vm_violations_store.get_violations_named('voltage')))
+
+    return flows, vm_violations_store.total_violations, vm_violations_store.monitored_violations, vm_viol_lazy
 
 def _generate_flow_monitor_remove_message(flow_type, bn, slack, baseMVA, time):
     ret_str = "removing {0} {1} from monitored set".format(flow_type, bn)
