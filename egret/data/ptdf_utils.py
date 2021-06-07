@@ -127,9 +127,10 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
 
         self._base_point = base_point
         self._calculate_factorization()
-
+        self._mw_only = True
 
         self._set_lazy_limits(ptdf_options)
+        self._ptdf_options = ptdf_options
 
         # we'll cache the PTDF rows
         # we've calculated thus far
@@ -261,8 +262,8 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
         self.contingency_limits_array_masked = self.contingency_limits_array[branch_mask]
 
     def _set_lazy_limits(self, ptdf_options):
+        self._get_filtered_lines(ptdf_options)
         if ptdf_options['lazy']:
-            self._get_filtered_lines(ptdf_options)
             ## add / reset the relative limits based on the current options
             branch_limits = self.branch_limits_array_masked
             interface_max_limits = self.interface_max_limits
@@ -552,8 +553,8 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
         LMP : np.array of LMPs indexed by buses_keys
         '''
         ## NOTE: unmonitored lines cannot contribute to LMPC
-        PFD = np.fromiter( ( value(dual[mb.ineq_pf_branch_thermal_bounds[bn]])
-                              if bn in mb.ineq_pf_branch_thermal_bounds else
+        PFD = np.fromiter( ( value(dual[mb.ineq_branch_thermal_bounds[bn]])
+                              if bn in mb.ineq_branch_thermal_bounds else
                               0. for i,bn in enumerate(self.branches_keys_masked) ),
                               float, count=len(self.branches_keys_masked))
 
@@ -652,7 +653,7 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
                        ptdf_options, branches_keys=branches_keys, buses_keys=buses_keys,
                        interfaces=interfaces, contingencies=contingencies)
         self._ptdf_const = dict()
-        self._pldf_row = dict()
+        self._pldf_rows = dict()
         self._pldf_const = dict()
 
     def _calculate_factorization(self):
@@ -862,10 +863,19 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
         super().__init__(branches, buses, reference_bus, base_point,
                          ptdf_options, branches_keys=branches_keys, buses_keys=buses_keys,
                          interfaces=interfaces, contingencies=contingencies)
-        self._qtdf_row = dict()
+
+        self.vm_limits_ub_array = np.fromiter((buses[bus]['v_max'] for bus in self.buses_keys), float, count=len(self.buses_keys))
+        self.vm_limits_lb_array = np.fromiter((buses[bus]['v_min'] for bus in self.buses_keys), float, count=len(self.buses_keys))
+        self.vm_limits_ub_array.flags.writeable = False
+        self.vm_limits_lb_array.flags.writeable = False
+        self._set_lazy_vm_limits(ptdf_options)
+        self._qtdf_rows = dict()
         self._qtdf_const = dict()
-        self._qldf_row = dict()
+        self._qldf_rows = dict()
         self._qldf_const = dict()
+        self._vdf_rows = dict()
+        self._vdf_const = dict()
+        self._mw_only = False
 
     def _calculate_factorization(self):
         super()._calculate_factorization()
@@ -893,19 +903,19 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
         '''
         returns a (bus_name, coefficient) iterator for a given branch_name
         '''
-        yield from zip(self.buses_keys_no_ref, self._get_qtdf_row(branch_name))
+        yield from zip(self.buses_keys, self._get_qtdf_row(branch_name))
 
     def get_branch_qldf_iterator(self, branch_name):
         '''
         returns a (bus_name, coefficient) iterator for a given branch_name
         '''
-        yield from zip(self.buses_keys_no_ref, self._get_qldf_row(branch_name))
+        yield from zip(self.buses_keys, self._get_qldf_row(branch_name))
 
     def get_bus_vdf_iterator(self, bus_name):
         '''
         returns a (bus_name, coefficient) iterator for a given bus_name
         '''
-        yield from zip(self.buses_keys_no_ref, self._get_vdf_row(bus_name))
+        yield from zip(self.buses_keys, self._get_vdf_row(bus_name))
 
     def get_branch_qtdf_abs_max(self, branch_name):
         '''
@@ -923,7 +933,7 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
         qldf_row = self._get_qldf_row(branch_name)
         return np.abs(qldf_row).max()
 
-    def get_branch_vdf_abs_max(self, bus_name):
+    def get_bus_vdf_abs_max(self, bus_name):
         '''
         returns the maximum of the absolute value for any coefficent
         in bus_name's vdf row
@@ -944,7 +954,7 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
             const = qtdf_row@self.QM0 + self._get_tseries_qflow_const(branch_name)
             self._qtdf_const[branch_name] = const
 
-        return const
+        return const.item()
 
     def get_branch_qldf_const(self, branch_name):
         '''
@@ -959,7 +969,7 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
             const = qldf_row@self.QM0 + self._get_tseries_qloss_const(branch_name)
             self._qldf_const[branch_name] = const
 
-        return const
+        return const.item()
 
     def get_bus_vdf_const(self, bus_name):
         '''
@@ -995,13 +1005,29 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
     def get_qloss_distribution(self):
         return self._qloss_distribution
 
+    def _set_lazy_vm_limits(self, ptdf_options):
+        if ptdf_options['lazy']:
+            ## add / reset the relative limits based on the current options
+            vm_ub = self.vm_limits_ub_array
+            vm_lb = self.vm_limits_lb_array
+            rel_flow_tol = ptdf_options['rel_flow_tol']
+            abs_flow_tol = ptdf_options['abs_flow_tol']
+            lazy_flow_tol = ptdf_options['lazy_rel_vm_tol']
+
+            ## only enforce the relative and absolute, within tollerance
+            self.enforced_vm_limits_ub = np.maximum(vm_ub*(1+rel_flow_tol), vm_ub+abs_flow_tol)
+            self.enforced_vm_limits_lb = np.minimum(vm_lb*(1-rel_flow_tol), vm_lb-abs_flow_tol)
+            ## make sure the lazy limits are a superset of the enforce limits
+            self.lazy_vm_limits_ub = np.minimum(vm_ub*(1+lazy_flow_tol), self.enforced_vm_limits_ub)
+            self.lazy_vm_limits_lb = np.maximum(vm_lb*(1-lazy_flow_tol), self.enforced_vm_limits_lb)
+
     def _get_qtdf_row(self, branch_name):
         if branch_name in self._qtdf_rows:
             QTDF_row = self._qtdf_rows[branch_name]
         else:
             # calculate row
             branch_idx = self._branchname_to_index_map[branch_name]
-            QTDF_row = self.QMLU.solve(self.QB_dA[branch_idx].toarray(out=self._bus_sensi_buffer)[0], trans='T')
+            QTDF_row = -self.QMLU.solve(self.QB_dA[branch_idx].toarray()[0], trans='T')
             self._qtdf_rows[branch_name] = QTDF_row
             #TODO: find best spot to update loss factor residuals
         return QTDF_row
@@ -1012,7 +1038,7 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
         else:
             # calculate row
             branch_idx = self._branchname_to_index_map[branch_name]
-            QLDF_row = self.QMLU.solve(self.QG_dA[branch_idx].toarray(out=self._bus_sensi_buffer)[0], trans='T')
+            QLDF_row = -self.QMLU.solve(self.QG_dA[branch_idx].toarray()[0], trans='T')
             self._qldf_rows[branch_name] = QLDF_row
             #TODO: find best spot to update loss factor residuals
         return QLDF_row
@@ -1023,7 +1049,9 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
         else:
             # calculate row
             bus_idx = self._busname_to_index_map[bus_name]
-            VDF_row = self.QMLU.solve(np.eye(len(self.buses_keys))[0], trans='T')
+            rhs = np.zeros(len(self.buses_keys))
+            rhs[bus_idx] = 1
+            VDF_row = -self.QMLU.solve(rhs, trans='T')
             self._vdf_rows[bus_name] = VDF_row
         return VDF_row
 
@@ -1044,7 +1072,7 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
     def _calculate_qlossfactors(self):
         logger.info("Calculating Reactive Loss Factors")
         bus_map = self._busname_to_index_map
-        QLF = -self.QMLU.solve(self.QG_dA.toarray().sum(axis=0), trans='T')
+        QLF = self.QMLU.solve(self.QG_dA.toarray().sum(axis=0), trans='T')
         QLF_dict = {b:QLF[i] for b,i in bus_map.items()}
         offset = np.array(QLF.T @ self.QM0).item()
         offset += sum([self._get_tseries_qloss_const(bn) for bn in self._branches.keys()]).item()
@@ -1052,15 +1080,6 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
         self._qlossoffset = offset
         self._qlossfactor_resid = QLF_dict
         self._qlossoffset_resid = offset
-
-    def _calculate_vmfactors(self):
-        logger.info("Calculating Voltage Magnitude Factors")
-        bus_map = self._busname_to_index_map
-        VDF = -self.QMLU.solve(np.eye(len(bus_map)), trans='T')
-        VDF_dict = {b:VDF[i] for b,i in bus_map.items()}
-        offset = np.array(VDF.T @ self.QM0).item()
-        self._vmfactor = VDF_dict
-        self._vmoffset = offset
 
     def _get_tseries_qflow_const(self, branch_name):
         #TODO: ideally would only send one branch and the from/to buses, but need to add stripped down function to tx_calc
@@ -1090,6 +1109,7 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
 
         ## make back to row-looking vectors
         QFV = QFV.T
+        VM.shape = (VM.shape[0],)
 
         return QFV.A[0], VM
 

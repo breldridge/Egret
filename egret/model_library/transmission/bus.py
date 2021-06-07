@@ -491,6 +491,71 @@ def declare_eq_qloss_ptdf_approx(model, PTDF, rel_ptdf_tol=None, abs_ptdf_tol=No
     else:
         m.qloss = expr
 
+def declare_eq_bus_vm_approx(model, index_set, PTDF=None, rel_ptdf_tol=None, abs_ptdf_tol=None):
+    """
+    Create the equality constraints or expressions for voltage magnitude (from PTDF
+    approximation) at the bus
+    """
+
+    m = model
+
+    con_set = decl.declare_set("_con_eq_bus_vm_approx_set", model, index_set)
+
+    vm_is_var = isinstance(m.vm, pe.Var)
+
+    if vm_is_var:
+        m.eq_vm_bus = pe.Constraint(con_set)
+    else:
+        if not isinstance(m.vm, pe.Expression):
+            raise Exception("Unrecognized type for m.vm", m.vm.pprint())
+
+    if PTDF is None:
+        return
+
+    for bus_name in con_set:
+        expr = \
+            get_vm_expr_ptdf_approx(m, bus_name, PTDF, rel_ptdf_tol=rel_ptdf_tol, abs_ptdf_tol=abs_ptdf_tol)
+
+        if vm_is_var:
+            m.eq_vm_bus[bus_name] = \
+                m.vm[bus_name] == expr
+        else:
+            m.vm[bus_name] = expr
+
+def get_vm_expr_ptdf_approx(model, bus_name, PTDF, rel_ptdf_tol=None, abs_ptdf_tol=None):
+    """
+    Create a pyomo reactive power flow expression from PTDF matrix
+    """
+    if rel_ptdf_tol is None:
+        rel_ptdf_tol = 0.
+    if abs_ptdf_tol is None:
+        abs_ptdf_tol = 0.
+
+    const = PTDF.get_bus_vdf_const(bus_name)
+
+    max_coef = PTDF.get_bus_vdf_abs_max(bus_name)
+
+    ptdf_tol = max(abs_ptdf_tol, rel_ptdf_tol*max_coef)
+    ## NOTE: It would be easy to hold on to the 'ptdf' dictionary here, if we wanted to
+    m_q_nw = model.q_nw
+    ## if model.q_nw is Var, we can use LinearExpression
+    ## to build these dense constraints much faster
+    coef_list = []
+    var_list = []
+    for bn, coef in PTDF.get_bus_vdf_iterator(bus_name):
+        if abs(coef) >= ptdf_tol:
+            coef_list.append(coef)
+            var_list.append(m_q_nw[bn])
+        else:
+            const += coef * m_q_nw[bn].expr()
+
+    if isinstance(m_q_nw, pe.Var):
+        expr = LinearExpression(linear_vars=var_list, linear_coefs=coef_list, constant=const)
+    else:
+        expr = quicksum( (coef*var for coef, var in zip(coef_list, var_list)), start=const, linear=True)
+
+    return expr
+
 def declare_eq_p_balance_dc_approx(model, index_set,
                                    bus_p_loads,
                                    gens_by_bus,

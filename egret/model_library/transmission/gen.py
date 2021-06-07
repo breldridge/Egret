@@ -55,6 +55,23 @@ def declare_expression_pgqg_operating_cost(model, index_set,
             found_q_costs = True
             m.qg_operating_cost[gen_name] = \
                 sum(v*m.qg[gen_name]**i for i, v in q_costs[gen_name]['values'].items())
+        elif q_costs is 'penalty':
+            found_q_costs = True
+            m.qg_operating_cost[gen_name] = 0.1 * (m.q_pos[gen_name] + m.q_neg[gen_name])
 
     if not found_q_costs:
         del m.qg_operating_cost
+
+def declare_eq_q_fdf_deviation(model, index_set, gens):
+    """
+    Create the Expression objects to represent the operating costs
+    for the real and reactive (if present) power of each of the
+    generators.
+    """
+    m = model
+    con_set = decl.declare_set('_con_eq_q_deviation',
+                                model=model, index_set=index_set)
+    m.eq_q_deviation = pe.Constraint(con_set)
+
+    for gen_name in con_set:
+        m.eq_q_deviation[gen_name] = m.qg[gen_name] - gens[gen_name]['qg'] == m.q_pos[gen_name] - m.q_neg[gen_name]

@@ -712,7 +712,7 @@ def get_power_flow_expr_qtdf_approx(model, branch_name, PTDF, rel_ptdf_tol=None,
     return expr
 
 
-def declare_eq_branch_power_ptdf_approx(model, index_set, PTDF, rel_ptdf_tol=None, abs_ptdf_tol=None):
+def declare_eq_branch_power_ptdf_approx(model, index_set, PTDF=None, rel_ptdf_tol=None, abs_ptdf_tol=None):
     """
     Create the equality constraints or expressions for power (from PTDF 
     approximation) in the branch
@@ -730,6 +730,9 @@ def declare_eq_branch_power_ptdf_approx(model, index_set, PTDF, rel_ptdf_tol=Non
         if not isinstance(m.pf, pe.Expression):
             raise Exception("Unrecognized type for m.pf", m.pf.pprint())
 
+    if PTDF is None:
+        return
+
     for branch_name in con_set:
         expr = \
             get_power_flow_expr_ptdf_approx(m, branch_name, PTDF, rel_ptdf_tol=rel_ptdf_tol, abs_ptdf_tol=abs_ptdf_tol)
@@ -742,7 +745,7 @@ def declare_eq_branch_power_ptdf_approx(model, index_set, PTDF, rel_ptdf_tol=Non
         else:
             m.pf[branch_name] = expr
 
-def declare_eq_branch_power_qtdf_approx(model, index_set, PTDF, rel_ptdf_tol=None, abs_ptdf_tol=None):
+def declare_eq_branch_power_qtdf_approx(model, index_set, PTDF=None, rel_ptdf_tol=None, abs_ptdf_tol=None):
     """
     Create the equality constraints or expressions for power (from PTDF
     approximation) in the branch
@@ -759,6 +762,9 @@ def declare_eq_branch_power_qtdf_approx(model, index_set, PTDF, rel_ptdf_tol=Non
     else:
         if not isinstance(m.qf, pe.Expression):
             raise Exception("Unrecognized type for m.qf", m.qf.pprint())
+
+    if PTDF is None:
+        return
 
     for branch_name in con_set:
         expr = \
@@ -1194,17 +1200,17 @@ def declare_ineq_pq_branch_thermal_bounds(model, index_set, branches, thermal_li
         return
 
     PTDF = m._PTDF
-    pld = PTDF.get_loss_distribution
-    qld = PTDF.get_qloss_distribution
+    pld = PTDF.get_ploss_distribution()
+    qld = PTDF.get_qloss_distribution()
 
     for bn in index_set:
         branch = branches[bn]
-        thermal_limit = thermal_limits
+        thermal_limit = thermal_limits[bn]
         if thermal_limit is not None:
-            add_constr_branch_thermal_limit(m, branch, bn, thermal_limit, pfl_of_ploss=pld[bn], qfl_of_qloss=qld[bn])
+            expr, ub = _get_pq_branch_thermal_bound_expr(m, branch, bn, thermal_limit, pfl_of_ploss=pld[bn], qfl_of_qloss=qld[bn])
+            m.ineq_branch_thermal_bounds[bn] = (None, expr, ub)
 
-
-def add_constr_branch_thermal_limit(model, branch, branch_name, thermal_limit, pfl_of_ploss=0, qfl_of_qloss=0):
+def _get_pq_branch_thermal_bound_expr(model, branch, branch_name, thermal_limit, pfl_of_ploss=0, qfl_of_qloss=0):
     """
     Create the inequality constraints for the branch thermal limits
     based on the power variables for the fdf model.
@@ -1214,7 +1220,6 @@ def add_constr_branch_thermal_limit(model, branch, branch_name, thermal_limit, p
     bn = branch_name
     m_pf = m.pf[bn]
     m_qf = m.qf[bn]
-    vars_list = [m_pf, m_qf]
 
     _pf = branch['pf']
     _qf = branch['qf']
@@ -1249,7 +1254,8 @@ def add_constr_branch_thermal_limit(model, branch, branch_name, thermal_limit, p
         vars_list.append(m.qloss)
 
     expr = LinearExpression(constant=0, linear_coefs=coef_list, linear_vars=vars_list)
-    model.ineq_branch_thermal_limit[bn] = (None, expr, thermal_limit ** 2 + pflow ** 2 + qflow ** 2)
+    ub = thermal_limit ** 2 + pflow ** 2 + qflow ** 2
+    return expr, ub
 
 
 def declare_ineq_p_contingency_branch_thermal_bounds(model, index_set,

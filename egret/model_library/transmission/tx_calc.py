@@ -467,7 +467,6 @@ def _calculate_H_matrix_qflow(branches,buses,index_set_branch,index_set_bus,mapp
 
         val = -(b + bc/2) * vn / (tau**2) - g * vm * sin(tn - tm + shift)/tau
 
-        # else somebody might have to check
         if val != 0.0:
             idx_col = mapping_bus_to_idx[from_bus]
             row.append(idx_row)
@@ -476,7 +475,6 @@ def _calculate_H_matrix_qflow(branches,buses,index_set_branch,index_set_bus,mapp
 
         val = (b + bc/2) * vm - g * vn * sin(tn - tm + shift)/tau
 
-        # else somebody might have to check
         if val != 0.0:
             idx_col = mapping_bus_to_idx[to_bus]
             row.append(idx_row)
@@ -833,7 +831,6 @@ def _calculate_K0_const_qloss(branches,buses,index_set_branch,base_point=BasePoi
             shift = -math.radians(branch['transformer_phase_shift'])
         b = calculate_susceptance(branch)
         bc = branch['charging_susceptance']
-        bb = (b + bc/2)
 
         if base_point == BasePointType.FLATSTART:
             vn = 1.
@@ -846,7 +843,7 @@ def _calculate_K0_const_qloss(branches,buses,index_set_branch,base_point=BasePoi
             tn = buses[from_bus]['va']
             tm = buses[to_bus]['va']
 
-        K0_const[idx_row] = bb * ((vn/tau)**2 + vm**2) \
+        K0_const[idx_row] = (b + bc/2) * ((vn/tau)**2 + vm**2) \
                                - 2 * b * vn * vm * cos(tn - tm + shift) / tau
 
     return K0_const
@@ -1077,25 +1074,13 @@ def calculate_fdf_q_factorization(branches,buses,index_set_branch,index_set_bus,
 def calculate_loss_distribution_p(branches, buses):
     losses = {k:branch['pt'] + branch['pf'] for k,branch in branches.items()}
     total_losses = sum(ll for ll in losses.values())
-    loss_distribution_p = {bk: 0 for bk in buses.keys()}
-    for k, branch in branches.items():
-        bf = branch['from_bus']
-        bt = branch['to_bus']
-        ll = losses[k]/2
-        loss_distribution_p[bf] += ll / total_losses
-        loss_distribution_p[bt] += ll / total_losses
+    loss_distribution_p = {k:val/total_losses for k,val in losses.items()}
     return loss_distribution_p
 
 def calculate_loss_distribution_q(branches, buses):
     losses = {k:branch['qt'] + branch['qf'] for k,branch in branches.items()}
     total_losses = sum(ll for ll in losses.values())
-    loss_distribution_q = {bk: 0 for bk in buses.keys()}
-    for k, branch in branches.items():
-        bf = branch['from_bus']
-        bt = branch['to_bus']
-        ll = losses[k] / 2
-        loss_distribution_q[bf] += ll / total_losses
-        loss_distribution_q[bt] += ll / total_losses
+    loss_distribution_q = {k:val/total_losses for k,val in losses.items()}
     return loss_distribution_q
 
 class _ContingencyCompensator:
