@@ -721,10 +721,13 @@ def add_violations(lazy_violations, flows, mb, md, solver, ptdf_options,
     else:
         model = mb.parent_block()
 
+    mw_only = PTDF._mw_only
+
     baseMVA = md.data['system']['baseMVA']
     branches = dict(md.elements(element_type='branch'))
     pld = PTDF.get_ploss_distribution()
-    qld = PTDF.get_qloss_distribution()
+    if not mw_only:
+        qld = PTDF.get_qloss_distribution()
 
     persistent_solver = isinstance(solver, PersistentSolver)
 
@@ -734,7 +737,8 @@ def add_violations(lazy_violations, flows, mb, md, solver, ptdf_options,
 
     constr = mb.ineq_branch_thermal_bounds
     pf_is_var = isinstance(mb.pf, pyo.Var)
-    qf_is_var = isinstance(mb.qf, pyo.Var)
+    if not mw_only:
+        qf_is_var = isinstance(mb.qf, pyo.Var)
     viol_in_mb = mb._idx_monitored
     for i, bn in _iter_over_viol_set(lazy_violations.branch_lazy_violations, mb, PTDF, abs_ptdf_tol, rel_ptdf_tol, solver=solver):
         thermal_limit = PTDF.branch_limits_array_masked[i]
@@ -747,7 +751,7 @@ def add_violations(lazy_violations, flows, mb, md, solver, ptdf_options,
         else:
             logger.debug(prepend_str+_generate_flow_monitor_message('branch', bn, flows.SFV[i], -thermal_limit, thermal_limit, baseMVA, time))
 
-        if PTDF._mw_only:
+        if mw_only:
             constr[bn], new_slacks = _generate_branch_thermal_bounds(mb, bn, thermal_limit)
         else:
             expr, ub = libbranch._get_pq_branch_thermal_bound_expr(mb, branches[bn], bn, thermal_limit, pfl_of_ploss=pld[bn], qfl_of_qloss=qld[bn])

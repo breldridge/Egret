@@ -726,7 +726,8 @@ def _lazy_ptdf_lopf_model_solve_loop(m, md, solver, solver_tee=True, symbolic_so
             return lpu.LazyPTDFTerminationCondition.FLOW_VIOLATION
 
         lpu.add_violations(viol_lazy, flows, m, md, solver, ptdf_options, PTDF)
-        lpu.add_vm_violations(vm_viol_lazy, flows, m, md, solver, ptdf_options, PTDF)
+        if not mw_only:
+            lpu.add_vm_violations(vm_viol_lazy, flows, m, md, solver, ptdf_options, PTDF)
         total_flow_constr_added = len(viol_lazy)
         add_constr_message =  "iteration {0}, added {1} flow constraint(s)".format(i,total_flow_constr_added)
         if not mw_only:
@@ -951,8 +952,8 @@ if __name__ == '__main__':
     model_data = create_ModelData(test_case)
     print(filename)
 
-    #lopf_model = create_p_lopf_model
-    lopf_model = create_compact_lopf_model
+    lopf_model = create_p_lopf_model
+    #lopf_model = create_compact_lopf_model
     #lopf_model = create_d_lopf_model
     #lopf_model = create_s_lopf_model
 
