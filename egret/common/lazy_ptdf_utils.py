@@ -11,6 +11,7 @@
 from pyomo.solvers.plugins.solvers.persistent_solver import PersistentSolver
 from egret.model_library.defn import ApproximationType
 from egret.common.log import logger, logging
+from pyomo.core.util import quicksum
 import collections.abc as abc
 import egret.model_library.transmission.branch as libbranch
 import egret.model_library.transmission.bus as libbus
@@ -51,6 +52,8 @@ def populate_default_ptdf_options(ptdf_options):
         ptdf_options['lp_iteration_limit'] = 100
     if 'max_violations_per_iteration' not in ptdf_options:
         ptdf_options['max_violations_per_iteration'] = 5
+    if 'max_vm_violations_per_iteration' not in ptdf_options:
+        ptdf_options['max_vm_violations_per_iteration'] = 5
     if 'lazy' not in ptdf_options:
         ptdf_options['lazy'] = True
     if 'branch_kv_threshold' not in ptdf_options:
@@ -579,6 +582,8 @@ def _generate_flow_monitor_message(e_type, bn, flow=None, lower_limit=None, uppe
 def _iter_over_viol_set(viol_set, mb, PTDF, abs_ptdf_tol, rel_ptdf_tol, solver=None):
     pq_model = not PTDF._mw_only
     pf_is_var = isinstance(mb.pf, pyo.Var)
+    pfl_in_mb = hasattr(mb, 'pfl')
+    qfl_in_mb = hasattr(mb, 'qfl')
 
     if solver is not None:
         persistent_solver = isinstance(solver, PersistentSolver)
@@ -605,6 +610,30 @@ def _iter_over_viol_set(viol_set, mb, PTDF, abs_ptdf_tol, rel_ptdf_tol, solver=N
             elif not qf_is_var and mb.qf[bn].expr is None:
                 expr = libbranch.get_power_flow_expr_qtdf_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol, rel_ptdf_tol=rel_ptdf_tol)
                 mb.qf[bn] = expr
+        if pfl_in_mb:
+            pfl_is_var = isinstance(mb.pfl, pyo.Var)
+            if pfl_is_var and mb.pfl[bn].value is None:
+                expr = libbranch.get_branch_pfl_expr_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol,
+                                                            rel_ptdf_tol=rel_ptdf_tol)
+                mb.eq_pfl_branch[bn] = mb.pfl[bn] == expr
+                if persistent_solver:
+                    solver.add_constraint(mb.eq_pfl_branch[bn])
+            elif not pfl_is_var and mb.pfl[bn].expr is None:
+                expr = libbranch.get_branch_pfl_expr_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol,
+                                                            rel_ptdf_tol=rel_ptdf_tol)
+                mb.pfl[bn] = expr
+        if qfl_in_mb:
+            qfl_is_var = isinstance(mb.qfl, pyo.Var)
+            if qfl_is_var and mb.qfl[bn].value is None:
+                expr = libbranch.get_branch_qfl_expr_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol,
+                                                            rel_ptdf_tol=rel_ptdf_tol)
+                mb.eq_qfl_branch[bn] = mb.qfl[bn] == expr
+                if persistent_solver:
+                    solver.add_constraint(mb.eq_qfl_branch[bn])
+            elif not qfl_is_var and mb.qfl[bn].expr is None:
+                expr = libbranch.get_branch_qfl_expr_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol,
+                                                            rel_ptdf_tol=rel_ptdf_tol)
+                mb.qfl[bn] = expr
         yield i, bn
 
 ## helper for generating pf
@@ -715,13 +744,21 @@ def _generate_contingency_bounds(mb, cn, minimum_limit, maximum_limit):
 ## violation adder
 def add_violations(lazy_violations, flows, mb, md, solver, ptdf_options,
                     PTDF, time=None, prepend_str=""):
-    #TODO: may need to condition this on mw_only status
+
+    if len(lazy_violations) <= 0:
+        return
+
     if time is None:
         model = mb
     else:
         model = mb.parent_block()
 
     mw_only = PTDF._mw_only
+    pf_is_var = isinstance(mb.pf, pyo.Var)
+    if not mw_only:
+        qf_is_var = isinstance(mb.qf, pyo.Var)
+    pfl_in_mb = hasattr(mb, 'pfl')
+    qfl_in_mb = hasattr(mb, 'qfl')
 
     baseMVA = md.data['system']['baseMVA']
     branches = dict(md.elements(element_type='branch'))
@@ -736,9 +773,6 @@ def add_violations(lazy_violations, flows, mb, md, solver, ptdf_options,
     abs_ptdf_tol = ptdf_options['abs_ptdf_tol']
 
     constr = mb.ineq_branch_thermal_bounds
-    pf_is_var = isinstance(mb.pf, pyo.Var)
-    if not mw_only:
-        qf_is_var = isinstance(mb.qf, pyo.Var)
     viol_in_mb = mb._idx_monitored
     for i, bn in _iter_over_viol_set(lazy_violations.branch_lazy_violations, mb, PTDF, abs_ptdf_tol, rel_ptdf_tol, solver=solver):
         thermal_limit = PTDF.branch_limits_array_masked[i]
@@ -775,6 +809,11 @@ def add_violations(lazy_violations, flows, mb, md, solver, ptdf_options,
         if persistent_solver:
             solver.add_constraint(constr[bn])
 
+    if pfl_in_mb:
+        _update_ploss_resid(mb, PTDF, rel_ptdf_tol, abs_ptdf_tol, solver)
+    if qfl_in_mb:
+        _update_qloss_resid(mb, PTDF, rel_ptdf_tol, abs_ptdf_tol, solver)
+
     _add_interface_violations(lazy_violations, flows, mb, md, solver, ptdf_options,
                                 PTDF, model, baseMVA, persistent_solver, rel_ptdf_tol, abs_ptdf_tol,
                                 time, prepend_str)
@@ -782,6 +821,61 @@ def add_violations(lazy_violations, flows, mb, md, solver, ptdf_options,
                                 PTDF, model, baseMVA, persistent_solver, rel_ptdf_tol, abs_ptdf_tol,
                                 time, prepend_str)
 
+def _update_ploss_resid(mb, PTDF, rel_ptdf_tol, abs_ptdf_tol, solver=None):
+    # Need to call this *after* mb._idx_monitored has been updated
+
+    if solver is not None:
+        persistent_solver = isinstance(solver, PersistentSolver)
+    else:
+        persistent_solver = False
+    ploss_is_var = isinstance(mb.ploss, pyo.Var)
+
+    if ploss_is_var:
+        if persistent_solver:
+            solver.remove_constraint(mb.eq_ploss)
+        del mb.eq_ploss
+    else:
+        if persistent_solver:
+            raise Exception('Ploss as Pyomo Expression is not supported.')
+        del mb.ploss
+
+    expr = libbus.get_ploss_expr_ptdf_approx(mb, PTDF, abs_ptdf_tol=abs_ptdf_tol, rel_ptdf_tol=rel_ptdf_tol, use_residuals=True)
+
+    if ploss_is_var:
+        mb.eq_ploss = pyo.Constraint()
+        mb.eq_ploss = mb.ploss == expr
+        if persistent_solver:
+            solver.add_constraint(mb.eq_ploss)
+    else:
+        mb.ploss = expr
+
+def _update_qloss_resid(mb, PTDF, rel_ptdf_tol, abs_ptdf_tol, solver=None):
+    # Need to call this *after* mb._idx_monitored has been updated
+
+    if solver is not None:
+        persistent_solver = isinstance(solver, PersistentSolver)
+    else:
+        persistent_solver = False
+    qloss_is_var = isinstance(mb.qloss, pyo.Var)
+
+    if qloss_is_var:
+        if persistent_solver:
+            solver.remove_constraint(mb.eq_qloss)
+        del mb.eq_qloss
+    else:
+        if persistent_solver:
+            raise Exception('Qloss as Pyomo Expression is not supported.')
+        del mb.qloss
+
+    expr = libbus.get_qloss_expr_ptdf_approx(mb, PTDF, abs_ptdf_tol=abs_ptdf_tol, rel_ptdf_tol=rel_ptdf_tol, use_residuals=True)
+
+    if qloss_is_var:
+        mb.eq_qloss = pyo.Constraint()
+        mb.eq_qloss = mb.qloss == expr
+        if persistent_solver:
+            solver.add_constraint(mb.eq_qloss)
+    else:
+        mb.qloss = expr
 
 def add_vm_violations(lazy_violations, flows, mb, md, solver, ptdf_options,
                    PTDF, time=None, prepend_str=""):
@@ -876,12 +970,46 @@ def _add_contingency_violations(lazy_violations, flows, mb, md, solver, ptdf_opt
             solver.add_constraint(constr[cn,bn])
 
 ## helper for generating pf
-def _iter_over_initial_set(branches, branches_in_service, PTDF):
+def _iter_over_initial_set(mb, branches, branches_in_service, PTDF):
+    pf_is_var = isinstance(mb.pf, pyo.Var)
+    pfl_in_mb = hasattr(mb, 'pfl')
+    qfl_in_mb = hasattr(mb, 'qfl')
+    mw_only = PTDF._mw_only
     for bn in branches_in_service:
         branch = branches[bn]
         if 'lazy' in branch and not branch['lazy']:
             if bn in PTDF.branchname_to_index_masked_map:
                 i = PTDF.branchname_to_index_masked_map[bn]
+                if pf_is_var and mb.pf[bn].value is None:
+                    expr = libbranch.get_power_flow_expr_ptdf_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol, rel_ptdf_tol=rel_ptdf_tol)
+                    mb.eq_pf_branch[bn] = mb.pf[bn] == expr
+                elif not pf_is_var and mb.pf[bn].expr is None:
+                    expr = libbranch.get_power_flow_expr_ptdf_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol, rel_ptdf_tol=rel_ptdf_tol)
+                    mb.pf[bn] = expr
+                if not mw_only:
+                    qf_is_var = isinstance(mb.qf, pyo.Var)
+                    if qf_is_var and mb.qf[bn].value is None:
+                        expr = libbranch.get_power_flow_expr_qtdf_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol, rel_ptdf_tol=rel_ptdf_tol)
+                        mb.eq_qf_branch[bn] = mb.qf[bn] == expr
+                    elif not qf_is_var and mb.qf[bn].expr is None:
+                        expr = libbranch.get_power_flow_expr_qtdf_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol, rel_ptdf_tol=rel_ptdf_tol)
+                        mb.qf[bn] = expr
+                if pfl_in_mb:
+                    pfl_is_var = isinstance(mb.pfl, pyo.Var)
+                    if pfl_is_var and mb.pfl[bn].value is None:
+                        expr = libbranch.get_branch_pfl_expr_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol, rel_ptdf_tol=rel_ptdf_tol)
+                        mb.eq_pfl_branch[bn] = mb.pfl[bn] == expr
+                    elif not pfl_is_var and mb.pfl[bn].expr is None:
+                        expr = libbranch.get_branch_pfl_expr_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol, rel_ptdf_tol=rel_ptdf_tol)
+                        mb.pfl[bn] = expr
+                if qfl_in_mb:
+                    qfl_is_var = isinstance(mb.qfl, pyo.Var)
+                    if qfl_is_var and mb.qfl[bn].value is None:
+                        expr = libbranch.get_branch_qfl_expr_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol, rel_ptdf_tol=rel_ptdf_tol)
+                        mb.eq_qfl_branch[bn] = mb.qfl[bn] == expr
+                    elif not qfl_is_var and mb.qfl[bn].expr is None:
+                        expr = libbranch.get_branch_qfl_expr_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol, rel_ptdf_tol=rel_ptdf_tol)
+                        mb.qfl[bn] = expr
                 yield i, bn
             else:
                 logger.warning("Branch {0} has flag 'lazy' set to False but is excluded from monitored set based on kV limits".format(bn))
@@ -903,15 +1031,32 @@ def add_initial_monitored_branches(mb, branches, branches_in_service, ptdf_optio
     rel_ptdf_tol = ptdf_options['rel_ptdf_tol']
     abs_ptdf_tol = ptdf_options['abs_ptdf_tol']
 
+    mw_only = PTDF._mw_only
+
     constr = mb.ineq_branch_thermal_bounds
+    pf_is_var = isinstance(mb.pf, pyo.Var)
+    if not mw_only:
+        qf_is_var = isinstance(mb.qf, pyo.Var)
+        plf_is_var = hasattr(mb,'pfl') and isinstance(mb.pfl, pyo.Var)
+        qlf_is_var = hasattr(mb,'qfl') and isinstance(mb.qfl, pyo.Var)
     viol_in_mb = mb._idx_monitored
-    for i, bn in _iter_over_initial_set(branches, branches_in_service, PTDF):
+    for i, bn in _iter_over_initial_set(mb, branches, branches_in_service, PTDF):
         thermal_limit = PTDF.branch_limits_array_masked[i]
         if hasattr(PTDF,'_q_correction'):
             thermal_limit -= PTDF._q_correction[bn]
-        mb.pf[bn] = libbranch.get_power_flow_expr_ptdf_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol, rel_ptdf_tol=rel_ptdf_tol)
-        constr[bn], _ = _generate_branch_thermal_bounds(mb, bn, thermal_limit)
+        if mw_only:
+            mb.pf[bn] = libbranch.get_power_flow_expr_ptdf_approx(mb, bn, PTDF, abs_ptdf_tol=abs_ptdf_tol,
+                                                                  rel_ptdf_tol=rel_ptdf_tol)
+            constr[bn], _ = _generate_branch_thermal_bounds(mb, bn, thermal_limit)
+        else:
+            expr, ub = libbranch._get_pq_branch_thermal_bound_expr(mb, branches[bn], bn, thermal_limit, pfl_of_ploss=pld[bn], qfl_of_qloss=qld[bn])
+            constr[bn] = (None, expr, ub)
         viol_in_mb.append(i)
+
+    if hasattr(mb, 'pfl'):
+        _update_ploss_resid(mb, PTDF, rel_ptdf_tol, abs_ptdf_tol)
+    if hasattr(mb, 'qfl'):
+        _update_qloss_resid(mb, PTDF, rel_ptdf_tol, abs_ptdf_tol)
 
 def add_initial_monitored_buses(mb, buses, buses_idx, ptdf_options, PTDF):
     ## static information between runs

@@ -413,6 +413,9 @@ class VirtualPTDFMatrix(_PTDFManagerBase):
     def _insert_reference_bus(self, bus_array, val):
         return np.insert(bus_array, self._busname_to_index_map[self._reference_bus], val)
 
+    def _remove_reference_bus(self, bus_array):
+        return np.delete(bus_array, self._busname_to_index_map[self._reference_bus])
+
     def _calculate_PFV_delta(self, cn, PFV, VA, masked):
         comp = self.contingency_compensators[cn]
 
@@ -713,7 +716,7 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
             self._ptdf_const[branch_name] = const[0]
             const = const[0]
 
-        return const
+        return const.item()
 
     def get_branch_pldf_const(self, branch_name):
         '''
@@ -728,7 +731,7 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
             const = pldf_row@self.M0 + self._get_tseries_loss_const(branch_name)
             self._pldf_const[branch_name] = const[0]
 
-        return const
+        return const.item()
 
     def get_lossfactor_iterator(self):
         yield from self._lossfactor.items()
@@ -740,11 +743,11 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
     def get_lossoffset(self):
         return self._lossoffset
 
-    def get_lossfactor_residuals(self):
-        self._update_lossfactor_residuals()
-        LF = self._lossfactor_resid
-        LF0 = self._lossoffset_resid
-        return LF, LF0
+    def get_lossfactor_resid_iterator(self):
+        yield from self._lossfactor_resid.items()
+
+    def get_lossoffset_resid(self):
+        return self._lossoffset_resid
 
     def get_ploss_distribution(self):
         return self._loss_distribution
@@ -756,7 +759,7 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
         else:
             # calculate row
             branch_idx = self._branchname_to_index_map[branch_name]
-            PLDF_row = self.MLU.solve(self.G_dA[branch_idx].toarray(out=self._bus_sensi_buffer)[0], trans='T')
+            PLDF_row = -self.MLU.solve(self.G_dA[branch_idx].toarray(out=self._bus_sensi_buffer)[0], trans='T')
             self._pldf_rows[branch_name] = PLDF_row
             #TODO: find best spot to update loss factor residuals
         return PLDF_row
@@ -851,6 +854,22 @@ class VirtualFDFpMatrix(VirtualPTDFMatrix):
             VA = -self._insert_reference_bus(VA.T[0], 0.)
 
         return PFV.A[0], PFV_I.A[0], VA
+
+    def calculate_PLV(self, mb=None, VA=None):
+
+        if VA is None:
+            NWV = np.fromiter((value(mb.p_nw[b]) for b in self.buses_keys_no_ref), float,
+                              count=len(self.buses_keys_no_ref))
+            NWV = np.asmatrix(NWV + self.M0)
+            VA = self.MLU.solve(NWV.A[0])
+
+        l,w = self.G_dA.shape
+        if w < len(VA):
+            VA=self._remove_reference_bus(VA)
+
+        PLV  = self.G_dA@VA + self.G0
+
+        return PLV
 
 
 class VirtualFDFpqMatrix(VirtualFDFpMatrix):
@@ -996,11 +1015,11 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
     def get_qlossoffset(self):
         return self._qlossoffset
 
-    def get_qlossfactor_residuals(self):
-        self._update_qlossfactor_residuals()
-        LF = self._qlossfactor_resid
-        LF0 = self._qlossoffset_resid
-        return LF, LF0
+    def get_qlossfactor_resid_iterator(self):
+        yield from self._qlossfactor_resid.items()
+
+    def get_qlossoffset_resid(self):
+        return self._qlossoffset_resid
 
     def get_qloss_distribution(self):
         return self._qloss_distribution
@@ -1112,6 +1131,22 @@ class VirtualFDFpqMatrix(VirtualFDFpMatrix):
         VM.shape = (VM.shape[0],)
 
         return QFV.A[0], VM
+
+    def calculate_QLV(self, mb=None, VM=None):
+
+        if VM is None:
+            NWV = np.fromiter((value(mb.q_nw[b]) for b in self.buses_keys), float,
+                              count=len(self.buses_keys))
+            NWV = np.asmatrix(NWV + self.QM0)
+            VM = self.MLU.solve(NWV.A[0])
+
+        l,w = self.QG_dA.shape
+        if w < len(VM):
+            VM=self._remove_reference_bus(VM)
+
+        QLV  = self.QG_dA@VM + self.QG0
+
+        return QLV
 
 class PTDFMatrix(_PTDFManagerBase):
     '''
