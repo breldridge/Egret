@@ -38,7 +38,7 @@ def _create_base_acpf_model(model_data):
     branch_attrs = md.attributes(element_type='branch')
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
 
     bus_pairs = zip_items(branch_attrs['from_bus'], branch_attrs['to_bus'])
     unique_bus_pairs = list(OrderedDict((val, None) for idx, val in bus_pairs.items()))
@@ -144,7 +144,8 @@ def _create_base_acpf_model(model_data):
     #ref_bus = md.data['system']['reference_bus']
     qg_equality_tuples = list()
     #pg_equality_tuples = list()
-    for b, genlist in gens_by_bus.items():
+    for b, gens in gens_by_bus.items():
+        genlist = [g for g,df in gens]
         if len(genlist) > 1:
             # we have more than one generator at this bus
             for i in range(1,len(genlist)):
@@ -170,7 +171,7 @@ def create_psv_acpf_model(model_data):
     buses = dict(md.elements(element_type='bus'))
     bus_attrs = md.attributes(element_type='bus')
     branch_attrs = md.attributes(element_type='branch')
-    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
     buses_with_gens = _buses_with_gens(gens)
     bus_pairs = zip_items(branch_attrs['from_bus'], branch_attrs['to_bus'])
     unique_bus_pairs = list(OrderedDict((val, None) for idx, val in bus_pairs.items()).keys())
@@ -200,14 +201,15 @@ def create_psv_acpf_model(model_data):
 
     # if there is more than one generator at the reference
     # bus, then we fix the pg for all but one
-    for i,g in enumerate(gens_by_bus[ref_bus]):
+    gens_at_refbus = [gen for gen,_ in gens_by_bus[ref_bus]]
+    for i,g in enumerate(gens_at_refbus):
         if i > 0:
             model.pg[g].fixed = True
 
     for bus_name in bus_attrs['names']:
         if bus_name != ref_bus and bus_name in buses_with_gens:
             model.vm[bus_name].fixed = True
-            for gen_name in gens_by_bus[bus_name]:
+            for gen_name,_ in gens_by_bus[bus_name]:
                 model.pg[gen_name].fixed = True
 
     # relate c, s, and vmsq to vm and va

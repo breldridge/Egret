@@ -91,7 +91,7 @@ def _create_base_power_ac_model(model_data, include_feasibility_slack=False, pw_
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
 
     unique_bus_pairs = tx_utils.get_unique_bus_pairs(md)
 
@@ -519,7 +519,7 @@ def create_riv_acopf_model(model_data, include_feasibility_slack=False, pw_cost_
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
 
     model = pe.ConcreteModel()
 

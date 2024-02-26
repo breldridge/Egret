@@ -36,7 +36,7 @@ def create_gdp_subproblem(model, model_data, include_angle_diff_limits=False):
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
 
     model.subproblem = bi.SubModel(fixed=(model.u, model.v, model.w))
 

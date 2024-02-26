@@ -139,7 +139,7 @@ def create_explicit_subproblem(model, subproblem, model_data, omega_key, include
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
 
     ### declare (and fix) the loads at the buses
     bus_p_loads, _ = tx_utils.dict_of_bus_loads(buses, loads)

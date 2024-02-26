@@ -59,7 +59,7 @@ def create_copperplate_dispatch_approx_model(model_data, include_feasibility_sla
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
 
     model = pe.ConcreteModel()
 

@@ -134,7 +134,7 @@ def create_explicit_subproblem(model, model_data, include_angle_diff_limits=Fals
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
 
     ### declare lower-level as a PAO (Pyomo-extension) submodel;
     ### be explicit in specifying upper-level variables that appear in this model

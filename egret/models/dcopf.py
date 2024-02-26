@@ -75,7 +75,7 @@ def create_btheta_dcopf_model(model_data, include_angle_diff_limits=False, inclu
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
 
     model = pe.ConcreteModel()
 
@@ -282,7 +282,7 @@ def create_ptdf_dcopf_model(model_data, include_feasibility_slack=False, base_po
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
 
     model = pe.ConcreteModel()
 

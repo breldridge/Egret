@@ -206,9 +206,35 @@ def gens_by_bus(buses, gens):
     """
     gens_by_bus = {k: list() for k in buses.keys()}
     for gen_name, gen in gens.items():
-        gens_by_bus[gen['bus']].append(gen_name)
+        bus = gen['bus']
+        if bus is str:
+            gens_by_bus[bus].append(gen_name)
+        elif bus is dict:
+            for bus_name in bus.keys():
+                gens_by_bus[bus_name].append(gen_name)
 
     return gens_by_bus
+
+def gens_by_multibus(buses, gens):
+    """
+    Return a dictionary of the (generator, distribution factor) tuples attached to each bus
+    """
+    gens_by_multibus = {k: list() for k in buses.keys()}
+    for gen_name, gen in gens.items():
+        if gen['bus'] is str:
+            gens_by_multibus[gen['bus']].append((gen_name, 1))
+        elif gen['bus'] is dict:
+            for bus, factor in en['bus'].items():
+                gens_by_multibus[bus].append((gen_name, factor))
+
+    return gens_by_multibus
+
+def unpack_multibus(gens):
+    for gen in gens:
+        if type(gen) is tuple:
+            yield gen
+        else:
+            yield gen, 1
 
 def over_gen_limit(load, gens, gen_maxs):
     '''
@@ -219,10 +245,10 @@ def over_gen_limit(load, gens, gen_maxs):
     max_over_gen = 0.
     if load < 0.:
         max_over_gen += -load
-    for g in gens:
+    for g,df in unpack_multibus(gens):
         g_max = gen_maxs[g]
         if g_max > 0:
-            max_over_gen += g_max
+            max_over_gen += g_max * df
 
     return max_over_gen
 
@@ -235,10 +261,10 @@ def load_shed_limit(load, gens, gen_mins):
     max_load_shed = 0.
     if load > 0.:
         max_load_shed += load
-    for g in gens:
+    for g,df in unpack_multibus(gens):
         g_min = gen_mins[g]
         if g_min < 0:
-            max_load_shed += -g_min
+            max_load_shed += -g_min * df
 
     return max_load_shed
 

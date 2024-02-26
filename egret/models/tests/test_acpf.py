@@ -58,7 +58,7 @@ class TestPSVACPF(unittest.TestCase):
         buses = dict(md.elements(element_type='bus'))
         gen_attrs = md.attributes(element_type='generator')
         bus_attrs = md.attributes(element_type='bus')
-        gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+        gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
 
         for b in gens_by_bus:
             genlist = gens_by_bus[b]
@@ -66,11 +66,11 @@ class TestPSVACPF(unittest.TestCase):
             pg2 = 0
             qg1 = 0
             qg2 = 0
-            for g in genlist:
-                pg1 += gen_attrs['pg'][g]
-                pg2 += soln['pg'][g]
-                qg1 += gen_attrs['qg'][g]
-                qg2 += soln['qg'][g]
+            for g,df in genlist:
+                pg1 += gen_attrs['pg'][g] * df
+                pg2 += soln['pg'][g] * df
+                qg1 += gen_attrs['qg'][g] * df
+                qg2 += soln['qg'][g] * df
             self.assertAlmostEqual(1e-3*pg1, 1e-3*pg2, places=4)
             self.assertAlmostEqual(1e-3*qg1, 1e-3*qg2, places=4)
 

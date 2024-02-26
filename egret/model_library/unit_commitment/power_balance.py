@@ -35,7 +35,7 @@ def _setup_egret_network_model(block, tm):
 
     ## this is not the "real" gens by bus, but the
     ## index of net injections from the UC model
-    gens_by_bus = block.gens_by_bus
+    gens_by_bus = block.gens_by_multibus
 
     ### declare (and fix) the loads at the buses
     bus_p_loads = {b: value(m.Demand[b,tm]) for b in m.Buses}
