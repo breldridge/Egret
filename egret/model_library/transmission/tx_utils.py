@@ -207,11 +207,20 @@ def gens_by_bus(buses, gens):
     gens_by_bus = {k: list() for k in buses.keys()}
     for gen_name, gen in gens.items():
         bus = gen['bus']
-        if bus is str:
+        if isinstance(bus, str):
             gens_by_bus[bus].append(gen_name)
-        elif bus is dict:
-            for bus_name in bus.keys():
-                gens_by_bus[bus_name].append(gen_name)
+        elif isinstance(bus, dict):
+            if not ('type' in bus.keys() and 'data' in bus.keys()):
+                raise ValueError('Bus keys must include "type" and "data"')
+            if bus['type'] == 'multibus':
+                for bus_name in bus['data'].keys():
+                    gens_by_bus[bus_name].append(gen_name)
+            elif bus['type'] in ['bus', 'standard', 'single']:
+                gens_by_bus[bus].append(bus['data'])
+            else:
+                raise ValueError(f"Bus type {bus['type']} not supported. Must be multibus or bus.")
+        else:
+            raise TypeError('Bus specification is not string or dict.')
 
     return gens_by_bus
 
