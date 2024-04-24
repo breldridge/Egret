@@ -1677,9 +1677,27 @@ def solve_unit_commitment(model_data,
         return md, results
     return md
 
+def check_results(md):
+    md_elements = md_results.data['elements']
+    md_system = md_results.data['system']
+    print(f'elements keys: {md_elements.keys()}')
+    print(f'system keys: {md_system.keys()}')
+    gen_attrs = md.attributes(element_type='generator')
+    bus_attrs = md.attributes(element_type='bus')
+    load_attrs = md.attributes(element_type='load')
+
+    print('time \t load \t gen \t sum')
+    for i,t in enumerate(md_system['time_keys']):
+        load = sum(bus_attrs['pl'][b]['values'][i] for b in bus_attrs['pl'].keys())
+        gen = sum(gen_attrs['pg'][g]['values'][i] for g in gen_attrs['pg'].keys())
+        print(f'{t}:\t {load:%.2f} \t {gen:%.2f} \t {load-gen:%.2f}')
+
+
 if __name__ == '__main__':
     from egret.data.model_data import ModelData
 
-    filen = "tests/uc_test_instances/tiny_uc_tc_2_multibus.json"
+    # filen = "tests/uc_test_instances/tiny_uc_tc_2_multibus.json"
+    filen = "tests/uc_test_instances/tiny_uc_tc_2.json"
     md = ModelData.read(filen)
-    md_results = solve_unit_commitment(md, "gurobi")
+    md_results = solve_unit_commitment(md, solver="gurobi")
+    check_results(md_results)
