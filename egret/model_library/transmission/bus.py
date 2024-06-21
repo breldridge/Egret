@@ -151,41 +151,43 @@ def _get_dc_dicts(dc_inlet_branches_by_bus, dc_outlet_branches_by_bus, con_set):
         dc_outlet_branches_by_bus = dc_inlet_branches_by_bus
     return dc_inlet_branches_by_bus, dc_outlet_branches_by_bus
 
-def unpack_pg_by_bus(model, gens_by_bus, index_set=None):
+def unpack_gens_by_bus(model_var, gens_by_bus, index_set=None):
 
-    def _unpack(model, gens_by_bus):
-        for gen in gens_by_bus:
-            if type(gen) is tuple:
-                g, df = gen
-                expr = df * model.pg[g]
-            else:
-                expr = model.pg[gen]
-            yield expr
+    def _unpack(model_var, gen_pack):
+        if isinstance(gen_pack, list):
+            for gen in gen_pack:
+                # Case 1-a: if gens_by_bus is {bus1: [bus1], bus2: ...} is from '_setup_egret_network_model'
+                #   This should be the most common input type for models coming from Prescient.
+                if isinstance(gen, str):
+                    yield model_var[gen]
+                # Case 1-b: if the gens_by_bus is populated by (gen, distribution) tuples, but it is not currently used
+                elif isinstance(gen, tuple):
+                    g, df = gen
+                    yield df * model_var[g]
+                else:
+                    raise TypeError(f"Unpacking generator list gave unexpected type: {type(gen)}")
+        elif isinstance(gen_pack, dict):
+            # Case 2: if gens_by_bus is a gen_distribution_by_bus dictionary
+            for gen, df in gen_pack.items():
+                yield df * model_var[gen]
+        else:
+            raise TypeError(f"Unpacking an unexpected type: {type(gen_pack)}")
 
+    # Ideally this function is given the sub-dictionary of gen_distribution_by_bus, and we _unpack() as normal.
+    # Otherwise, we use index_set (ideally the bus list) and loop over gen_distribution_by_bus.
     if index_set:
         for i in index_set:
-            yield from _unpack(model, gens_by_bus[i])
+            yield from _unpack(model_var, gens_by_bus[i])
     else:
-        yield from _unpack(model, gens_by_bus)
+        yield from _unpack(model_var, gens_by_bus)
+
+def unpack_pg_by_bus(model, gens_by_bus, index_set=None):
+    return unpack_gens_by_bus(model.pg, gens_by_bus, index_set)
 
 def unpack_qg_by_bus(model, gens_by_bus, index_set=None):
+    return unpack_gens_by_bus(model.qg, gens_by_bus, index_set)
 
-    def _unpack(model, gens_by_bus):
-        for gen in gens_by_bus:
-            if type(gen) is tuple:
-                g, df = gen
-                expr = df * model.qg[g]
-            else:
-                expr = model.qg[gen]
-            yield expr
-
-    if index_set:
-        for i in index_set:
-            yield from _unpack(model, gens_by_bus[i])
-    else:
-        yield from _unpack(model, gens_by_bus)
-
-def declare_expr_p_net_withdraw_at_bus(model, index_set, bus_p_loads, gens_by_bus, bus_gs_fixed_shunts,
+def declare_expr_p_net_withdraw_at_bus(model, index_set, bus_p_loads, gen_distribution_by_bus, bus_gs_fixed_shunts,
                                        dc_inlet_branches_by_bus=None, dc_outlet_branches_by_bus=None):
     """
     Create a named pyomo expression for bus net withdraw
@@ -200,12 +202,12 @@ def declare_expr_p_net_withdraw_at_bus(model, index_set, bus_p_loads, gens_by_bu
     for b in index_set:
         m.p_nw[b] = ( bus_gs_fixed_shunts[b] 
                     + ( m.pl[b] if bus_p_loads[b] != 0.0 else 0.0 )
-                    - sum( pg for pg in unpack_pg_by_bus(m,gens_by_bus[b]))
+                    - sum( pg for pg in unpack_pg_by_bus(m,gen_distribution_by_bus[b]))
                     + sum(m.dcpf[branch_name] for branch_name in dc_outlet_branches_by_bus[b])
                     - sum(m.dcpf[branch_name] for branch_name in dc_inlet_branches_by_bus[b])
                     )
         
-def declare_eq_p_net_withdraw_at_bus(model, index_set, bus_p_loads, gens_by_bus, bus_gs_fixed_shunts,
+def declare_eq_p_net_withdraw_at_bus(model, index_set, bus_p_loads, gen_distribution_by_bus, bus_gs_fixed_shunts,
                                      dc_inlet_branches_by_bus=None, dc_outlet_branches_by_bus=None):
     """
     Create a named pyomo expression for bus net withdraw
@@ -222,7 +224,7 @@ def declare_eq_p_net_withdraw_at_bus(model, index_set, bus_p_loads, gens_by_bus,
     for b in index_set:
         m.eq_p_net_withdraw_at_bus[b] = m.p_nw[b] == ( bus_gs_fixed_shunts[b] 
                                                     + ( m.pl[b] if bus_p_loads[b] != 0.0 else 0.0 )
-                                                    - sum( pg for pg in unpack_pg_by_bus(m,gens_by_bus[b]))
+                                                    - sum( pg for pg in unpack_pg_by_bus(m,gen_distribution_by_bus[b]))
                                                     + sum(m.dcpf[branch_name] for branch_name
                                                            in dc_outlet_branches_by_bus[b])
                                                     - sum(m.dcpf[branch_name] for branch_name
@@ -278,7 +280,7 @@ def declare_eq_p_balance_ed(model, index_set, bus_p_loads, gens_by_bus, bus_gs_f
     """
     m = model
 
-    p_expr = sum( pg for pg in unpack_pg_by_bus(m, gens_by_bus, index_set))
+    p_expr = sum(pg for pg in unpack_pg_by_bus(m, gens_by_bus, index_set))
     p_expr -= sum(m.pl[bus_name] for bus_name in index_set if bus_p_loads[bus_name] is not None)
     p_expr -= sum(bus_gs_fixed_shunts[bus_name] for bus_name in index_set if bus_gs_fixed_shunts[bus_name] != 0.0)
 
@@ -362,7 +364,7 @@ def declare_eq_p_balance_dc_approx(model, index_set,
 
 def declare_eq_p_balance(model, index_set,
                          bus_p_loads,
-                         gens_by_bus,
+                         gen_distribution_by_bus,
                          bus_gs_fixed_shunts,
                          inlet_branches_by_bus, outlet_branches_by_bus,
                          **rhs_kwargs):
@@ -396,7 +398,7 @@ def declare_eq_p_balance(model, index_set,
                 if idx == 'include_feasibility_over_generation':
                     p_expr -= eval("m." + val)[bus_name]
 
-        for pg in unpack_pg_by_bus(m, gens_by_bus[bus_name]):
+        for pg in unpack_pg_by_bus(m, gen_distribution_by_bus[bus_name]):
             p_expr += pg
 
         m.eq_p_balance[bus_name] = \
@@ -405,7 +407,7 @@ def declare_eq_p_balance(model, index_set,
 
 def declare_eq_p_balance_with_i_aggregation(model, index_set,
                                             bus_p_loads,
-                                            gens_by_bus,
+                                            gen_distribution_by_bus,
                                             **rhs_kwargs):
     """
     Create the equality constraints for the real power balance
@@ -432,7 +434,7 @@ def declare_eq_p_balance_with_i_aggregation(model, index_set,
                 if idx == 'include_feasibility_over_generation':
                     p_expr -= eval("m." + val)[bus_name]
 
-        for pg in unpack_pg_by_bus(m,gens_by_bus[bus_name]):
+        for pg in unpack_pg_by_bus(m,gen_distribution_by_bus[bus_name]):
             p_expr += pg
 
         m.eq_p_balance[bus_name] = \
@@ -441,7 +443,7 @@ def declare_eq_p_balance_with_i_aggregation(model, index_set,
 
 def declare_eq_q_balance(model, index_set,
                          bus_q_loads,
-                         gens_by_bus,
+                         gen_distribution_by_bus,
                          bus_bs_fixed_shunts,
                          inlet_branches_by_bus, outlet_branches_by_bus,
                          **rhs_kwargs):
@@ -474,7 +476,7 @@ def declare_eq_q_balance(model, index_set,
                 if idx == 'include_feasibility_over_generation':
                     q_expr -= eval("m." + val)[bus_name]
 
-        for qg in unpack_qg_by_bus(m, gens_by_bus[bus_name]):
+        for qg in unpack_qg_by_bus(m, gen_distribution_by_bus[bus_name]):
             q_expr += qg
 
         m.eq_q_balance[bus_name] = \
@@ -483,7 +485,7 @@ def declare_eq_q_balance(model, index_set,
 
 def declare_eq_q_balance_with_i_aggregation(model, index_set,
                                             bus_q_loads,
-                                            gens_by_bus,
+                                            gen_distribution_by_bus,
                                             **rhs_kwargs):
     """
     Create the equality constraints for the reactive power balance
@@ -510,7 +512,7 @@ def declare_eq_q_balance_with_i_aggregation(model, index_set,
                 if idx == 'include_feasibility_over_generation':
                     q_expr -= eval("m." + val)[bus_name]
 
-        for qg in unpack_qg_by_bus(gens_by_bus[bus_name]):
+        for qg in unpack_qg_by_bus(m, gen_distribution_by_bus[bus_name]):
             q_expr += qg
 
         m.eq_q_balance[bus_name] = \

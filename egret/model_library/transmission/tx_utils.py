@@ -202,7 +202,7 @@ def inlet_outlet_branches_by_bus(branches, buses):
 
 def gens_by_bus(buses, gens):
     """
-    Return a dictionary of the generators attached to each bus
+    Return a dictionary with a list of generators attached to each bus
     """
     gens_by_bus = {k: list() for k in buses.keys()}
     for gen_name, gen in gens.items():
@@ -212,40 +212,54 @@ def gens_by_bus(buses, gens):
         elif isinstance(bus, dict):
             if not ('type' in bus.keys() and 'data' in bus.keys()):
                 raise ValueError('Bus keys must include "type" and "data"')
-            if bus['type'] == 'multibus':
-                for bus_name in bus['data'].keys():
-                    gens_by_bus[bus_name].append(gen_name)
-            elif bus['type'] in ['bus', 'standard', 'single']:
-                gens_by_bus[bus].append(bus['data'])
-            else:
-                raise ValueError(f"Bus type {bus['type']} not supported. Must be multibus or bus.")
+            for bus_name in bus['data'].keys():
+                gens_by_bus[bus_name].append(gen_name)
         else:
             raise TypeError('Bus specification is not string or dict.')
 
     return gens_by_bus
 
-def gens_by_multibus(buses, gens):
+def gen_distribution_by_bus(buses, gens):
     """
-    Return a dictionary of the (generator, distribution factor) tuples attached to each bus
+    Return a dictionary of {bus : { gen : distribution factor, ...}, ...}
     """
-    gens_by_multibus = {k: list() for k in buses.keys()}
+    gen_distribution_by_bus = {k: dict() for k in buses.keys()}
     for gen_name, gen in gens.items():
         if gen['bus'] is str:
-            gens_by_multibus[gen['bus']].append((gen_name, 1))
+            gen_distribution_by_bus[gen['bus']].update({gen_name: 1})
         elif gen['bus'] is dict:
             for bus, factor in en['bus'].items():
-                gens_by_multibus[bus].append((gen_name, factor))
+                gen_distribution_by_bus[bus].append((gen_name, factor))
 
-    return gens_by_multibus
+    return gen_distribution_by_bus
 
-def unpack_multibus(gens):
-    for gen in gens:
-        if type(gen) is tuple:
-            yield gen
-        else:
-            yield gen, 1
+def distribution_by_gen(gens, buses):
+    """
+    Return a dictionary of gen : list[(bus, distribution factor),...] tuples where each generator is located
+    """
+    distribution_by_gen = {g: list() for g in gens.keys()}
+    for gen_name, gen in gens.items():
+        if gen['bus'] is str:
+            distribution_by_gen[gen_name].append((gen['bus'], 1))
+        elif gen['bus'] is dict:
+            for bus, factor in en['bus'].items():
+                distribution_by_gen[gen_name].append((bus, factor))
 
-def over_gen_limit(load, gens, gen_maxs):
+    return distribution_by_gen
+
+def gen_bus_distfactor(gens, buses):
+    """
+    Return a dictionary of (gen,bus) : distribution factor
+    """
+    gen_bus_dict = {}
+    gens_by_bus = gen_distribution_by_bus(buses, gens)
+    for bus, items in gens_by_bus.items():
+        for gen, df in items:
+            gen_bus_dict[(gen, bus)] = df
+
+    return gen_bus_dict
+
+def over_gen_limit(load, gens, gen_maxs, gen_dists=None):
     '''
     Calculates the maximum amount of over-generation
     given a load and set of generators with
@@ -254,14 +268,17 @@ def over_gen_limit(load, gens, gen_maxs):
     max_over_gen = 0.
     if load < 0.:
         max_over_gen += -load
-    for g,df in unpack_multibus(gens):
+    for g in gens:
         g_max = gen_maxs[g]
         if g_max > 0:
-            max_over_gen += g_max * df
+            if gen_dists:
+                max_over_gen += g_max * gen_dists[g]
+            else:
+                max_over_gen += g_max
 
     return max_over_gen
 
-def load_shed_limit(load, gens, gen_mins):
+def load_shed_limit(load, gens, gen_mins, gen_dists=None):
     '''
     Calculates the maximum amount of load shedding
     given a load and set of generators with
@@ -270,10 +287,13 @@ def load_shed_limit(load, gens, gen_mins):
     max_load_shed = 0.
     if load > 0.:
         max_load_shed += load
-    for g,df in unpack_multibus(gens):
+    for g in gens:
         g_min = gen_mins[g]
         if g_min < 0:
-            max_load_shed += -g_min * df
+            if gen_dists:
+                max_load_shed += -g_min * gen_dists[g]
+            else:
+                max_load_shed += -g_min
 
     return max_load_shed
 
