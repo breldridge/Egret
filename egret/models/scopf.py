@@ -59,7 +59,8 @@ def create_scopf_model(model_data, include_feasibility_slack=False,
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gen_distribution_by_bus = tx_utils.gen_distribution_by_bus(buses, gens)
 
     model = pyo.ConcreteModel()
 
@@ -107,7 +108,7 @@ def create_scopf_model(model_data, include_feasibility_slack=False,
     libbus.declare_eq_p_balance_ed(model=model,
                                    index_set=buses_idx,
                                    bus_p_loads=bus_p_loads,
-                                   gens_by_bus=gens_by_bus,
+                                   gens_by_bus=gen_distribution_by_bus,
                                    bus_gs_fixed_shunts=bus_gs_fixed_shunts,
                                    **p_rhs_kwargs
                                    )
@@ -116,7 +117,7 @@ def create_scopf_model(model_data, include_feasibility_slack=False,
     libbus.declare_expr_p_net_withdraw_at_bus(model=model,
                                               index_set=buses_idx,
                                               bus_p_loads=bus_p_loads,
-                                              gens_by_bus=gens_by_bus,
+                                              gen_distribution_by_bus=gen_distribution_by_bus,
                                               bus_gs_fixed_shunts=bus_gs_fixed_shunts,
                                               dc_inlet_branches_by_bus=dc_inlet_branches_by_bus,
                                               dc_outlet_branches_by_bus=dc_outlet_branches_by_bus,

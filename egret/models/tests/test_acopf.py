@@ -37,15 +37,15 @@ def _test_p_and_v(tst, json_fname, md):
     buses = dict(md.elements(element_type='bus'))
     gen_attrs = md.attributes(element_type='generator')
     bus_attrs = md.attributes(element_type='bus')
-    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gen_distribution_by_bus = tx_utils.gen_distribution_by_bus(buses, gens)
 
-    for b in gens_by_bus:
-        genlist = gens_by_bus[b]
+    for b, gen_distribution in gen_distribution_by_bus.items():
         pg1 = 0
         pg2 = 0
         qg1 = 0
         qg2 = 0
-        for g,df in genlist:
+        for g,df in gen_distribution.items():
             pg1 += gen_attrs['pg'][g] * df
             pg2 += soln['pg'][g] * df
             qg1 += gen_attrs['qg'][g] * df

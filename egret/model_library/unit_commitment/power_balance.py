@@ -48,6 +48,7 @@ def _setup_egret_network_model(block, tm):
 
 def _copperplate_network_model(block, tm, relax_balance=None):
 
+    # when using _setup_egret_network_model(), gens_by_bus contains the bus injections.
     m, gens_by_bus, bus_p_loads, bus_gs_fixed_shunts = \
             _setup_egret_network_model(block, tm)
 
@@ -113,6 +114,7 @@ def _setup_contingency_slacks(m,block,tm):
     block.pfc_slack_neg = Var(block._contingency_set, domain=NonNegativeReals, dense=False)
 
 def _ptdf_dcopf_network_model(block,tm):
+    # when using _setup_egret_network_model(), gens_by_bus contains the bus injections.
     m, gens_by_bus, bus_p_loads, bus_gs_fixed_shunts = \
             _setup_egret_network_model(block, tm)
 
@@ -128,7 +130,7 @@ def _ptdf_dcopf_network_model(block,tm):
     libbus.declare_eq_p_net_withdraw_at_bus(model=block,
                                             index_set=m.Buses,
                                             bus_p_loads=bus_p_loads,
-                                            gens_by_bus=gens_by_bus,
+                                            gen_distribution_by_bus=gens_by_bus,
                                             bus_gs_fixed_shunts=bus_gs_fixed_shunts,
                                             )
 
@@ -422,8 +424,8 @@ def _add_load_mismatch(model):
             max_withdrawls = storage_max_withdraws 
 
             for g in model.ThermalGeneratorsAtBus[b]:
-                p_max = value(model.MaximumPowerOutput[g,t])
-                p_min = value(model.MinimumPowerOutput[g,t])
+                p_max = value(model.MaximumPowerOutput[g,t] * model.ThermalGeneratorDistFactor[g,b])
+                p_min = value(model.MinimumPowerOutput[g,t] * model.ThermalGeneratorDistFactor[g,b])
 
                 if p_max > 0:
                     max_injections += p_max
@@ -571,7 +573,7 @@ def _get_pg_expr_rule(t):
     def pg_expr_rule(block,b):
         m = block.parent_block()
         # bus b, time t (S)
-        return sum(m.PowerGeneratedStartupShutdown[g, t] for g in m.ThermalGeneratorsAtBus[b]) \
+        return sum(m.PowerGeneratedStartupShutdown[g, t] * m.ThermalGeneratorDistFactor[g,b] for g in m.ThermalGeneratorsAtBus[b]) \
                 + sum(m.PowerOutputStorage[s, t] for s in m.StorageAtBus[b])\
                 - sum(m.PowerInputStorage[s, t] for s in m.StorageAtBus[b])\
                 + sum(m.NondispatchablePowerUsed[g, t] for g in m.NondispatchableGeneratorsAtBus[b]) \
@@ -586,7 +588,7 @@ def _get_qg_expr_rule(t):
     def qg_expr_rule(block,b):
         m = block.parent_block()
         # bus b, time t (S)
-        return sum(m.ReactivePowerGenerated[g, t] for g in m.ThermalGeneratorsAtBus[b]) \
+        return sum(m.ReactivePowerGenerated[g, t] * m.ThermalGeneratorDistFactor[g,b] for g in m.ThermalGeneratorsAtBus[b]) \
             + m.LoadGenerateMismatchReactive[b,t]
     return qg_expr_rule
 
@@ -790,7 +792,7 @@ def power_balance_constraints(model, slack_type=SlackType.TRANSMISSION_LIMITS):
     # Power balance at each node (S)
     def power_balance(m, b, t):
         # bus b, time t (S)
-        return sum(m.PowerGeneratedStartupShutdown[g, t] for g in m.ThermalGeneratorsAtBus[b]) \
+        return sum(m.PowerGeneratedStartupShutdown[g, t] * m.ThermalGeneratorDistFactor[g,b] for g in m.ThermalGeneratorsAtBus[b]) \
                 + sum(m.PowerOutputStorage[s, t] for s in m.StorageAtBus[b])\
                 - sum(m.PowerInputStorage[s, t] for s in m.StorageAtBus[b])\
                 + sum(m.NondispatchablePowerUsed[g, t] for g in m.NondispatchableGeneratorsAtBus[b]) \

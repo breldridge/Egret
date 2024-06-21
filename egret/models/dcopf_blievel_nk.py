@@ -134,7 +134,8 @@ def create_explicit_subproblem(model, model_data, include_angle_diff_limits=Fals
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gen_distribution_by_bus = tx_utils.gen_distribution_by_bus(buses, gens)
 
     ### declare lower-level as a PAO (Pyomo-extension) submodel;
     ### be explicit in specifying upper-level variables that appear in this model
@@ -234,7 +235,7 @@ def create_explicit_subproblem(model, model_data, include_angle_diff_limits=Fals
     libbus.declare_eq_p_balance_dc_approx(model=model.subproblem,
                                           index_set=bus_attrs['names'],
                                           bus_p_loads=bus_p_loads,
-                                          gens_by_bus=gens_by_bus,
+                                          gens_by_bus=gen_distribution_by_bus,
                                           bus_gs_fixed_shunts=bus_gs_fixed_shunts,
                                           inlet_branches_by_bus=inlet_branches_by_bus,
                                           outlet_branches_by_bus=outlet_branches_by_bus,

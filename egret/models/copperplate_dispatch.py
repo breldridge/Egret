@@ -59,7 +59,8 @@ def create_copperplate_dispatch_approx_model(model_data, include_feasibility_sla
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gen_distribution_by_bus = tx_utils.gen_distribution_by_bus(buses, gens)
 
     model = pe.ConcreteModel()
 
@@ -88,7 +89,7 @@ def create_copperplate_dispatch_approx_model(model_data, include_feasibility_sla
     libbus.declare_eq_p_balance_ed(model=model,
                                    index_set=bus_attrs['names'],
                                    bus_p_loads=bus_p_loads,
-                                   gens_by_bus=gens_by_bus,
+                                   gens_by_bus=gen_distribution_by_bus,
                                    bus_gs_fixed_shunts=bus_gs_fixed_shunts,
                                    **p_rhs_kwargs
                                    )

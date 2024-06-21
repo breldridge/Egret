@@ -52,7 +52,8 @@ def create_btheta_losses_dcopf_model(model_data, relaxation_type=RelaxationType.
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gen_distribution_by_bus = tx_utils.gen_distribution_by_bus(buses, gens)
 
     model = pe.ConcreteModel()
 
@@ -83,7 +84,8 @@ def create_btheta_losses_dcopf_model(model_data, relaxation_type=RelaxationType.
     if include_feasibility_slack:
         p_marginal_slack_penalty = _validate_and_extract_slack_penalty(md)                
         p_rhs_kwargs, penalty_expr = _include_feasibility_slack(model, bus_attrs['names'], bus_p_loads,
-                                                                gens_by_bus, gen_attrs, p_marginal_slack_penalty)
+                                                                gens_by_bus, gen_attrs, gen_distribution_by_bus,
+                                                                p_marginal_slack_penalty)
 
     ### fix the reference bus
     ref_bus = md.data['system']['reference_bus']
@@ -150,7 +152,7 @@ def create_btheta_losses_dcopf_model(model_data, relaxation_type=RelaxationType.
     libbus.declare_eq_p_balance_dc_approx(model=model,
                                           index_set=bus_attrs['names'],
                                           bus_p_loads=bus_p_loads,
-                                          gens_by_bus=gens_by_bus,
+                                          gens_by_bus=gen_distribution_by_bus,
                                           bus_gs_fixed_shunts=bus_gs_fixed_shunts,
                                           inlet_branches_by_bus=inlet_branches_by_bus,
                                           outlet_branches_by_bus=outlet_branches_by_bus,
@@ -220,7 +222,8 @@ def create_ptdf_losses_dcopf_model(model_data, include_feasibility_slack=False,
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gen_distribution_by_bus = tx_utils.gen_distribution_by_bus(buses, gens)
 
     model = pe.ConcreteModel()
 
@@ -249,7 +252,7 @@ def create_ptdf_losses_dcopf_model(model_data, include_feasibility_slack=False,
     libbus.declare_expr_p_net_withdraw_at_bus(model=model,
                                               index_set=bus_attrs['names'],
                                               bus_p_loads=bus_p_loads,
-                                              gens_by_bus=gens_by_bus,
+                                              gen_distribution_by_bus=gen_distribution_by_bus,
                                               bus_gs_fixed_shunts=bus_gs_fixed_shunts,
                                               )
 
@@ -297,7 +300,7 @@ def create_ptdf_losses_dcopf_model(model_data, include_feasibility_slack=False,
     libbus.declare_eq_p_balance_ed(model=model,
                                    index_set=bus_attrs['names'],
                                    bus_p_loads=bus_p_loads,
-                                   gens_by_bus=gens_by_bus,
+                                   gens_by_bus=gen_distribution_by_bus,
                                    bus_gs_fixed_shunts=bus_gs_fixed_shunts,
                                    include_losses=branch_attrs['names'],
                                    **p_rhs_kwargs

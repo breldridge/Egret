@@ -38,7 +38,8 @@ def _create_base_acpf_model(model_data):
     branch_attrs = md.attributes(element_type='branch')
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gen_distribution_by_bus = tx_utils.gen_distribution_by_bus(buses, gens)
 
     bus_pairs = zip_items(branch_attrs['from_bus'], branch_attrs['to_bus'])
     unique_bus_pairs = list(OrderedDict((val, None) for idx, val in bus_pairs.items()))
@@ -121,7 +122,7 @@ def _create_base_acpf_model(model_data):
     libbus.declare_eq_p_balance(model=model,
                                 index_set=bus_attrs['names'],
                                 bus_p_loads=bus_p_loads,
-                                gens_by_bus=gens_by_bus,
+                                gen_distribution_by_bus=gen_distribution_by_bus,
                                 bus_gs_fixed_shunts=bus_gs_fixed_shunts,
                                 inlet_branches_by_bus=inlet_branches_by_bus,
                                 outlet_branches_by_bus=outlet_branches_by_bus
@@ -130,7 +131,7 @@ def _create_base_acpf_model(model_data):
     libbus.declare_eq_q_balance(model=model,
                                 index_set=bus_attrs['names'],
                                 bus_q_loads=bus_q_loads,
-                                gens_by_bus=gens_by_bus,
+                                gen_distribution_by_bus=gen_distribution_by_bus,
                                 bus_bs_fixed_shunts=bus_bs_fixed_shunts,
                                 inlet_branches_by_bus=inlet_branches_by_bus,
                                 outlet_branches_by_bus=outlet_branches_by_bus
@@ -171,7 +172,8 @@ def create_psv_acpf_model(model_data):
     buses = dict(md.elements(element_type='bus'))
     bus_attrs = md.attributes(element_type='bus')
     branch_attrs = md.attributes(element_type='branch')
-    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gen_distribution_by_bus = tx_utils.gen_distribution_by_bus(buses, gens)
     buses_with_gens = _buses_with_gens(gens)
     bus_pairs = zip_items(branch_attrs['from_bus'], branch_attrs['to_bus'])
     unique_bus_pairs = list(OrderedDict((val, None) for idx, val in bus_pairs.items()).keys())
@@ -201,7 +203,7 @@ def create_psv_acpf_model(model_data):
 
     # if there is more than one generator at the reference
     # bus, then we fix the pg for all but one
-    gens_at_refbus = [gen for gen,_ in gens_by_bus[ref_bus]]
+    gens_at_refbus = [gen for gen,_ in gen_distribution_by_bus[ref_bus].items()]
     for i,g in enumerate(gens_at_refbus):
         if i > 0:
             model.pg[g].fixed = True
@@ -209,7 +211,7 @@ def create_psv_acpf_model(model_data):
     for bus_name in bus_attrs['names']:
         if bus_name != ref_bus and bus_name in buses_with_gens:
             model.vm[bus_name].fixed = True
-            for gen_name,_ in gens_by_bus[bus_name]:
+            for gen_name,_ in gen_distribution_by_bus[bus_name].items():
                 model.pg[gen_name].fixed = True
 
     # relate c, s, and vmsq to vm and va

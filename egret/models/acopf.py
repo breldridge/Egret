@@ -29,27 +29,27 @@ from pyomo.common.collections.orderedset import OrderedSet
 from pyomo.contrib.fbbt import interval
 
 def _include_feasibility_slack(model, bus_names, bus_p_loads, bus_q_loads,
-                               gens_by_bus, gen_attrs,
+                               gens_by_bus, gen_attrs, gen_distribution_by_bus,
                                p_marginal_slack_penalty, q_marginal_slack_penalty):
     
     import egret.model_library.decl as decl
 
-    p_over_gen_bounds = {k: (0, tx_utils.over_gen_limit(bus_p_loads[k], gens_by_bus[k], gen_attrs['p_max'])) for k in bus_names}
+    p_over_gen_bounds = {k: (0, tx_utils.over_gen_limit(bus_p_loads[k], gens_by_bus[k], gen_attrs['p_max'], gen_distribution_by_bus[k])) for k in bus_names}
     decl.declare_var('p_over_generation', model=model, index_set=bus_names,
                      initialize=0., bounds=p_over_gen_bounds
                      )
 
-    p_load_shed_bounds  = {k: (0, tx_utils.load_shed_limit(bus_p_loads[k], gens_by_bus[k], gen_attrs['p_min'])) for k in bus_names}
+    p_load_shed_bounds  = {k: (0, tx_utils.load_shed_limit(bus_p_loads[k], gens_by_bus[k], gen_attrs['p_min'], gen_distribution_by_bus[k])) for k in bus_names}
     decl.declare_var('p_load_shed', model=model, index_set=bus_names,
                      initialize=0., bounds=p_load_shed_bounds
                      )
 
-    q_over_gen_bounds = {k: (0, tx_utils.over_gen_limit(bus_q_loads[k], gens_by_bus[k], gen_attrs['q_max'])) for k in bus_names}
+    q_over_gen_bounds = {k: (0, tx_utils.over_gen_limit(bus_q_loads[k], gens_by_bus[k], gen_attrs['q_max'], gen_distribution_by_bus[k])) for k in bus_names}
     decl.declare_var('q_over_generation', model=model, index_set=bus_names,
                      initialize=0., bounds=q_over_gen_bounds
                      )
 
-    q_load_shed_bounds  = {k: (0, tx_utils.load_shed_limit(bus_q_loads[k], gens_by_bus[k], gen_attrs['q_min'])) for k in bus_names}
+    q_load_shed_bounds  = {k: (0, tx_utils.load_shed_limit(bus_q_loads[k], gens_by_bus[k], gen_attrs['q_min'], gen_distribution_by_bus[k])) for k in bus_names}
     decl.declare_var('q_load_shed', model=model, index_set=bus_names,
                      initialize=0., bounds=q_load_shed_bounds
                      )
@@ -91,7 +91,8 @@ def _create_base_power_ac_model(model_data, include_feasibility_slack=False, pw_
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gen_distribution_by_bus = tx_utils.gen_distribution_by_bus(buses, gens)
 
     unique_bus_pairs = tx_utils.get_unique_bus_pairs(md)
 
@@ -152,6 +153,7 @@ def _create_base_power_ac_model(model_data, include_feasibility_slack=False, pw_
         p_rhs_kwargs, q_rhs_kwargs, penalty_expr = _include_feasibility_slack(model, bus_attrs['names'],
                                                                               bus_p_loads, bus_q_loads,
                                                                               gens_by_bus, gen_attrs,
+                                                                              gen_distribution_by_bus,
                                                                               p_marginal_slack_penalty,
                                                                               q_marginal_slack_penalty)
 
@@ -232,7 +234,7 @@ def _create_base_power_ac_model(model_data, include_feasibility_slack=False, pw_
     libbus.declare_eq_p_balance(model=model,
                                 index_set=bus_attrs['names'],
                                 bus_p_loads=bus_p_loads,
-                                gens_by_bus=gens_by_bus,
+                                gen_distribution_by_bus=gen_distribution_by_bus,
                                 bus_gs_fixed_shunts=bus_gs_fixed_shunts,
                                 inlet_branches_by_bus=inlet_branches_by_bus,
                                 outlet_branches_by_bus=outlet_branches_by_bus,
@@ -242,7 +244,7 @@ def _create_base_power_ac_model(model_data, include_feasibility_slack=False, pw_
     libbus.declare_eq_q_balance(model=model,
                                 index_set=bus_attrs['names'],
                                 bus_q_loads=bus_q_loads,
-                                gens_by_bus=gens_by_bus,
+                                gen_distribution_by_bus=gen_distribution_by_bus,
                                 bus_bs_fixed_shunts=bus_bs_fixed_shunts,
                                 inlet_branches_by_bus=inlet_branches_by_bus,
                                 outlet_branches_by_bus=outlet_branches_by_bus,
@@ -519,7 +521,8 @@ def create_riv_acopf_model(model_data, include_feasibility_slack=False, pw_cost_
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gen_distribution_by_bus = tx_utils.gen_distribution_by_bus(buses, gens)
 
     model = pe.ConcreteModel()
 
@@ -554,6 +557,7 @@ def create_riv_acopf_model(model_data, include_feasibility_slack=False, pw_cost_
         p_rhs_kwargs, q_rhs_kwargs, penalty_expr = _include_feasibility_slack(model, bus_attrs['names'],
                                                                               bus_p_loads, bus_q_loads,
                                                                               gens_by_bus, gen_attrs,
+                                                                              gen_distribution_by_bus,
                                                                               p_marginal_slack_penalty,
                                                                               q_marginal_slack_penalty)
 
@@ -677,14 +681,14 @@ def create_riv_acopf_model(model_data, include_feasibility_slack=False, pw_cost_
     libbus.declare_eq_p_balance_with_i_aggregation(model=model,
                                                    index_set=bus_attrs['names'],
                                                    bus_p_loads=bus_p_loads,
-                                                   gens_by_bus=gens_by_bus,
+                                                   gen_distribution_by_bus=gen_distribution_by_bus,
                                                    **p_rhs_kwargs
                                                    )
 
     libbus.declare_eq_q_balance_with_i_aggregation(model=model,
                                                    index_set=bus_attrs['names'],
                                                    bus_q_loads=bus_q_loads,
-                                                   gens_by_bus=gens_by_bus,
+                                                   gen_distribution_by_bus=gen_distribution_by_bus,
                                                    **q_rhs_kwargs
                                                    )
 

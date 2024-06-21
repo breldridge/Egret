@@ -31,14 +31,14 @@ from egret.common.log import logger
 from math import pi, radians, degrees
 
 
-def _include_feasibility_slack(model, bus_names, bus_p_loads, gens_by_bus, gen_attrs, p_marginal_slack_penalty):
+def _include_feasibility_slack(model, bus_names, bus_p_loads, gens_by_bus, gen_attrs, gen_distribution_by_bus, p_marginal_slack_penalty):
     import egret.model_library.decl as decl
 
-    load_shed_bounds  = {k: (0, tx_utils.load_shed_limit(bus_p_loads[k], gens_by_bus[k], gen_attrs['p_min'])) for k in bus_names}
+    load_shed_bounds  = {k: (0, tx_utils.load_shed_limit(bus_p_loads[k], gens_by_bus[k], gen_attrs['p_min'], gen_distribution_by_bus[k])) for k in bus_names}
     decl.declare_var('p_load_shed', model=model, index_set=bus_names,
                      initialize=0., bounds=load_shed_bounds
                      )
-    over_gen_bounds = {k: (0, tx_utils.over_gen_limit(bus_p_loads[k], gens_by_bus[k], gen_attrs['p_max'])) for k in bus_names}
+    over_gen_bounds = {k: (0, tx_utils.over_gen_limit(bus_p_loads[k], gens_by_bus[k], gen_attrs['p_max'], gen_distribution_by_bus[k])) for k in bus_names}
     decl.declare_var('p_over_generation', model=model, index_set=bus_names,
                      initialize=0., bounds=over_gen_bounds
                      )
@@ -75,7 +75,8 @@ def create_btheta_dcopf_model(model_data, include_angle_diff_limits=False, inclu
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gen_distribution_by_bus = tx_utils.gen_distribution_by_bus(buses, gens)
 
     model = pe.ConcreteModel()
 
@@ -101,7 +102,8 @@ def create_btheta_dcopf_model(model_data, include_angle_diff_limits=False, inclu
     if include_feasibility_slack:
         p_marginal_slack_penalty = _validate_and_extract_slack_penalty(md)        
         p_rhs_kwargs, penalty_expr = _include_feasibility_slack(model, bus_attrs['names'], bus_p_loads,
-                                                                gens_by_bus, gen_attrs, p_marginal_slack_penalty)
+                                                                gens_by_bus, gen_attrs, gen_distribution_by_bus,
+                                                                p_marginal_slack_penalty)
 
     ### fix the reference bus
     ref_bus = md.data['system']['reference_bus']
@@ -173,7 +175,7 @@ def create_btheta_dcopf_model(model_data, include_angle_diff_limits=False, inclu
     libbus.declare_eq_p_balance_dc_approx(model=model,
                                           index_set=bus_attrs['names'],
                                           bus_p_loads=bus_p_loads,
-                                          gens_by_bus=gens_by_bus,
+                                          gens_by_bus=gen_distribution_by_bus,
                                           bus_gs_fixed_shunts=bus_gs_fixed_shunts,
                                           inlet_branches_by_bus=inlet_branches_by_bus,
                                           outlet_branches_by_bus=outlet_branches_by_bus,
@@ -282,7 +284,8 @@ def create_ptdf_dcopf_model(model_data, include_feasibility_slack=False, base_po
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    gens_by_bus = tx_utils.gens_by_multibus(buses, gens)
+    gens_by_bus = tx_utils.gens_by_bus(buses, gens)
+    gen_distribution_by_bus = tx_utils.gen_distribution_by_bus(buses, gens)
 
     model = pe.ConcreteModel()
 
@@ -330,7 +333,7 @@ def create_ptdf_dcopf_model(model_data, include_feasibility_slack=False, base_po
     libbus.declare_eq_p_balance_ed(model=model,
                                    index_set=buses_idx,
                                    bus_p_loads=bus_p_loads,
-                                   gens_by_bus=gens_by_bus,
+                                   gens_by_bus=gen_distribution_by_bus,
                                    bus_gs_fixed_shunts=bus_gs_fixed_shunts,
                                    **p_rhs_kwargs
                                    )
@@ -339,7 +342,7 @@ def create_ptdf_dcopf_model(model_data, include_feasibility_slack=False, base_po
     libbus.declare_expr_p_net_withdraw_at_bus(model=model,
                                               index_set=buses_idx,
                                               bus_p_loads=bus_p_loads,
-                                              gens_by_bus=gens_by_bus,
+                                              gen_distribution_by_bus=gen_distribution_by_bus,
                                               bus_gs_fixed_shunts=bus_gs_fixed_shunts,
                                               dc_inlet_branches_by_bus=dc_inlet_branches_by_bus,
                                               dc_outlet_branches_by_bus=dc_outlet_branches_by_bus,

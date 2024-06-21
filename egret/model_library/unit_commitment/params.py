@@ -355,6 +355,7 @@ def load_params(model, model_data, slack_type):
     model.ThermalGeneratorsAtBus = Set(model.Buses, initialize=thermal_gens_by_bus)
     
     model.ThermalGeneratorType = Param(model.ThermalGenerators, within=Any, default='C', initialize=thermal_gen_attrs.get('fuel', dict()))
+    model.ThermalGeneratorDistFactor = Param(model.ThermalGenerators, model.Buses, within=NonNegativeReals, default=0, initialize=tx_utils.gen_bus_distfactor(buses, thermal_gens))
     
     def verify_thermal_generators_assigned_to_buses_rule(m):
        generators_at_buses = set(g for b in m.Buses for g in m.ThermalGeneratorsAtBus[b])
