@@ -247,7 +247,7 @@ def distribution_by_gen(gens, buses):
 
     return distribution_by_gen
 
-def gen_bus_distfactor(gens, buses):
+def gen_bus_distfactor(buses, gens):
     """
     Return a dictionary of (gen,bus) : distribution factor
     """
