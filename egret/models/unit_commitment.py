@@ -1696,8 +1696,8 @@ def check_results(md):
 if __name__ == '__main__':
     from egret.data.model_data import ModelData
 
-    # filen = "tests/uc_test_instances/tiny_uc_tc_2_multibus.json"
-    filen = "tests/uc_test_instances/tiny_uc_tc_2.json"
+    filen = "tests/uc_test_instances/tiny_uc_tc_2_multibus.json"
+    #filen = "tests/uc_test_instances/tiny_uc_tc_2.json"
     md = ModelData.read(filen)
     md_results = solve_unit_commitment(md, solver="gurobi")
     check_results(md_results)
