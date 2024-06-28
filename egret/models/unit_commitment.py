@@ -1701,3 +1701,6 @@ if __name__ == '__main__':
     md = ModelData.read(filen)
     md_results = solve_unit_commitment(md, solver="gurobi")
     check_results(md_results)
+    import json
+    with open('new_results.json', 'w') as f:
+        json.dump(md_results.data, f)

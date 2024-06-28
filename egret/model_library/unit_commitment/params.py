@@ -364,8 +364,26 @@ def load_params(model, model_data, slack_type):
        if len(unassigned_generators) > 0:
            print("Encountered thermal generators unassigned to a bus: "+str(unassigned_generators))
        assert(len(unassigned_generators)==0)
+
+    def verify_thermal_generator_distribution_rule(m):
+        df_tol = 1e-8
+        generators_at_buses = set(g for b in m.Buses for g in m.ThermalGeneratorsAtBus[b])
+        all_generators = set(m.ThermalGenerators)
+        all_buses = set(m.Buses)
+        total_distribution = {g: 0 for g in m.ThermalGenerators}
+        for b in m.Buses:
+            for g in m.ThermalGeneratorsAtBus[b]:
+                total_distribution[g] += m.ThermalGeneratorDistFactor[g,b]
+        over_distributed = [g for g in m.ThermalGenerators if total_distribution[g] > 1 + df_tol]
+        if len(over_distributed) > 0:
+            print("Encountered thermal generators with distribution > 1: " + str(over_distributed))
+        under_distributed = [g for g in m.ThermalGenerators if total_distribution[g] < 1 - df_tol]
+        if len(under_distributed) > 0:
+            print("Encountered thermal generators with distribution < 1: " + str(under_distributed))
+        assert(len(over_distributed) + len(under_distributed)==0)
     
     model.VerifyThermalGeneratorsAssignedToBuses = BuildAction(rule=verify_thermal_generators_assigned_to_buses_rule)
+    model.VerifyThermalGeneratorDistribution = BuildAction(rule=verify_thermal_generator_distribution_rule)
     
     model.QuickStart = Param(model.ThermalGenerators, within=Boolean, default=False, initialize=thermal_gen_attrs.get('fast_start', dict()))
     

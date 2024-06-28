@@ -182,10 +182,10 @@ def unpack_gens_by_bus(model_var, gens_by_bus, index_set=None):
         yield from _unpack(model_var, gens_by_bus)
 
 def unpack_pg_by_bus(model, gens_by_bus, index_set=None):
-    return unpack_gens_by_bus(model.pg, gens_by_bus, index_set)
+    yield from unpack_gens_by_bus(model.pg, gens_by_bus, index_set)
 
 def unpack_qg_by_bus(model, gens_by_bus, index_set=None):
-    return unpack_gens_by_bus(model.qg, gens_by_bus, index_set)
+    yield from unpack_gens_by_bus(model.qg, gens_by_bus, index_set)
 
 def declare_expr_p_net_withdraw_at_bus(model, index_set, bus_p_loads, gen_distribution_by_bus, bus_gs_fixed_shunts,
                                        dc_inlet_branches_by_bus=None, dc_outlet_branches_by_bus=None):

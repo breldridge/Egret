@@ -210,8 +210,8 @@ def gens_by_bus(buses, gens):
         if isinstance(bus, str):
             gens_by_bus[bus].append(gen_name)
         elif isinstance(bus, dict):
-            if not ('type' in bus.keys() and 'data' in bus.keys()):
-                raise ValueError('Bus keys must include "type" and "data"')
+            if not 'data' in bus.keys():
+                raise ValueError('Bus disctionary keys must include "data"')
             for bus_name in bus['data'].keys():
                 gens_by_bus[bus_name].append(gen_name)
         else:
@@ -225,9 +225,9 @@ def gen_distribution_by_bus(buses, gens):
     """
     gen_distribution_by_bus = {k: dict() for k in buses.keys()}
     for gen_name, gen in gens.items():
-        if gen['bus'] is str:
+        if isinstance(gen['bus'], str):
             gen_distribution_by_bus[gen['bus']].update({gen_name: 1})
-        elif gen['bus'] is dict:
+        elif isinstance(gen['bus'], dict):
             for bus, factor in en['bus'].items():
                 gen_distribution_by_bus[bus].append((gen_name, factor))
 
@@ -253,9 +253,9 @@ def gen_bus_distfactor(buses, gens):
     """
     gen_bus_dict = {}
     gens_by_bus = gen_distribution_by_bus(buses, gens)
-    for bus, items in gens_by_bus.items():
-        for gen, df in items:
-            gen_bus_dict[(gen, bus)] = df
+    for b, gens in gens_by_bus.items():
+        for g, df in gens.items():
+            gen_bus_dict[(g, b)] = df
 
     return gen_bus_dict
 
