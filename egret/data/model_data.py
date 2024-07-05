@@ -228,6 +228,13 @@ class ModelData(object):
                 if type(v) is tuple:
                     if elem[k] not in v:
                         break
+                # if we are looking for a bus, and the bus attribute is dict, then we check if the bus_name (v) is in
+                # the bus dictionary. If it is not, then we skip. If it is, then we yield the generaror name and bus name.
+                elif (k=='bus') and (isinstance(elem[k], dict)):
+                    if not v in elem[k]:
+                        break
+                    else:
+                        yield name, v
                 else:
                     if elem[k] != v:
                         break

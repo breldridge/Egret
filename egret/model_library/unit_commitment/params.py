@@ -449,23 +449,29 @@ def load_params(model, model_data, slack_type):
     if warn_neg_load:
         model.WarnAboutNegativeDemand = BuildAction(model.Buses, model.TimePeriods, rule=warn_about_negative_demand_rule)
 
-    _price_responsive_load_by_bus = {}
+    _price_responsive_load_by_bus = {k: list() for k in buses.keys()}
     _price_responsive_load_attrs = {'names': [], 'p_price': {}, 'p_load': {}}
-    for ln, load in loads.items():
-        if 'p_price' in load and load['p_price'] is not None:
-            bus = load['bus']
-            if bus in _price_responsive_load_by_bus:
-                _price_responsive_load_by_bus[bus].append(ln)
-            else:
-                _price_responsive_load_by_bus[bus]= [ln]
-            _price_responsive_load_attrs['names'].append(ln)
-            _price_responsive_load_attrs['p_price'][ln] = load['p_price']
-            _price_responsive_load_attrs['p_load'][ln] = load['p_load']
+    _price_responsive_loads = {ln: load for ln, load in loads.items() if 'p_price' in load and load['p_price'] is not None}
+    for ln, load in _price_responsive_loads.items():
+        bus = load['bus']
+        if isinstance(bus, str):
+            _price_responsive_load_by_bus[bus].append(ln)
+        elif isinstance(bus, dict):
+            for bn in bus.keys():
+                _price_responsive_load_by_bus[bn].append(ln)
+        else:
+            raise TypeError('Bus specification is not string or dict.')
+        _price_responsive_load_attrs['names'].append(ln)
+        _price_responsive_load_attrs['p_price'][ln] = load['p_price']
+        _price_responsive_load_attrs['p_load'][ln] = load['p_load']
 
     model.PriceResponsiveLoadAtBus = Set(model.Buses,
             initialize=lambda m,b : _price_responsive_load_by_bus[b] if b in _price_responsive_load_by_bus else ())
 
     model.PriceResponsiveLoad = Set(initialize=_price_responsive_load_attrs['names'])
+
+    model.PriceResponsiveLoadDistFactor = Param(model.PriceResponsiveLoad, model.Buses, within=NonNegativeReals, default=0,
+                                             initialize=tx_utils.gen_bus_distfactor(buses, _price_responsive_loads))
 
     model.PriceResponsiveLoadPrice = Param(model.PriceResponsiveLoad,
                                            model.TimePeriods,

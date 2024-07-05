@@ -579,7 +579,7 @@ def _get_pg_expr_rule(t):
                 + sum(m.NondispatchablePowerUsed[g, t] for g in m.NondispatchableGeneratorsAtBus[b]) \
                 + sum(m.HVDCLinePower[k,t] for k in m.HVDCLinesTo[b]) \
                 - sum(m.HVDCLinePower[k,t] for k in m.HVDCLinesFrom[b]) \
-                - sum(m.PriceResponsiveLoadServed[l,t] for l in m.PriceResponsiveLoadAtBus[b]) \
+                - sum(m.PriceResponsiveLoadServed[l,t] * m.PriceResponsiveLoadDistFactor[l,b] for l in m.PriceResponsiveLoadAtBus[b]) \
                 + m.LoadGenerateMismatch[b,t]
     return pg_expr_rule
 
